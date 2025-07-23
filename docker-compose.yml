@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: competition_db
+      POSTGRES_USER: competition_user
+      POSTGRES_PASSWORD: competition_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - competition_network
+
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://competition_user:competition_password@postgres:5432/competition_db
+      SECRET_KEY: your-secret-key-change-in-production
+      REDIS_URL: redis://redis:6379
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ./backend:/app
+      - ./submissions:/app/submissions
+      - ./tests:/app/tests
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - competition_network
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - competition_network
+
+  # Redis for caching and job queues
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - competition_network
+
+  # Code Execution Service
+  code-executor:
+    build:
+      context: ./docker/code-executor
+      dockerfile: Dockerfile
+    volumes:
+      - ./submissions:/submissions
+      - ./tests:/tests
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      MAX_EXECUTION_TIME: 30
+      MAX_MEMORY: 512m
+      MAX_CPU: 1.0
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - competition_network
+
+volumes:
+  postgres_data:
+
+networks:
+  competition_network:
+    driver: bridge 
