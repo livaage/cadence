@@ -172,4 +172,4 @@ INSERT INTO test_cases (problem_id, input_data, expected_output, is_hidden, poin
 
 -- Insert sample teacher (password: teacher123)
 INSERT INTO teachers (username, password_hash, email) VALUES
-('admin', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4J/HS.iK8O', 'admin@competition.com'); 
+('admin', '$2b$12$ti6TUhqPtHMnEpRpZWqrr.BLDU0y9kvtkJshEHJeXqjVHKm7OsgvG', 'admin@competition.com');

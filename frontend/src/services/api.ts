@@ -258,4 +258,93 @@ export const getGitHubRepoStats = async (repoId: string): Promise<GitHubRepoStat
   return response.data;
 };
 
-export default api; 
+// Lesson progress (live dashboard)
+export interface CheckpointLiveStats {
+  checkpoint_id: string;
+  order_index: number;
+  attempted: number;
+  solved: number;
+  total_attempts: number;
+  attempts_histogram: { '1': number; '2': number; '3+': number; unsolved: number };
+  common_wrong: Array<{ value: string; count: number }>;
+  timing_histogram: Record<string, number>;
+  timing_samples: number;
+}
+
+export interface LessonSummaryStats {
+  total_sessions: number;
+  total_checkpoints: number;
+  total_attempts: number;
+  total_solved_pairs: number;
+  possible_pairs: number;
+  solve_rate_pct: number;
+  completion_histogram: Record<string, number>;
+  top_wrong_overall: Array<{ checkpoint_id: string; value: string; count: number }>;
+}
+
+export interface LiveProgress {
+  lesson_id: string;
+  lesson_name: string;
+  join_code: string;
+  active_sessions: number;
+  summary: LessonSummaryStats;
+  checkpoints: CheckpointLiveStats[];
+}
+
+export type LiveScope = 'current' | 'course' | 'alltime';
+
+export const getLiveProgress = async (
+  teacherToken: string,
+  scope: LiveScope = 'current',
+  courseToken?: string,
+): Promise<LiveProgress> => {
+  const params: Record<string, string> = { scope };
+  if (courseToken) params.course_token = courseToken;
+  const response = await api.get(
+    `/lessons/by-token/${encodeURIComponent(teacherToken)}/live`,
+    { params },
+  );
+  return response.data;
+};
+
+// Courses
+export interface CourseNotebookStat {
+  lesson_id: string;
+  name: string;
+  order_index: number;
+  students_here_now: number;
+  total_attempts: number;
+  solved_rate_pct: number;
+}
+
+export interface CourseLive {
+  course_id: string;
+  course_name: string;
+  join_code: string;
+  total_enrollments: number;
+  not_started: number;
+  notebooks: CourseNotebookStat[];
+  overall_completion_histogram: Record<string, number>;
+}
+
+export const getCourseLive = async (courseTeacherToken: string): Promise<CourseLive> => {
+  const response = await api.get(`/courses/by-token/${encodeURIComponent(courseTeacherToken)}/live`);
+  return response.data;
+};
+
+export interface CourseNotebookRef {
+  id: string;
+  name: string;
+  join_code: string;
+  teacher_token: string;
+  order_index: number;
+}
+
+export const listCourseNotebooks = async (
+  courseTeacherToken: string,
+): Promise<CourseNotebookRef[]> => {
+  const response = await api.get(`/courses/by-token/${encodeURIComponent(courseTeacherToken)}/notebooks`);
+  return response.data;
+};
+
+export default api;

@@ -9,6 +9,8 @@ import TeacherDashboard from './components/TeacherDashboard';
 import TeacherLogin from './components/TeacherLogin';
 import ProblemSubmission from './components/ProblemSubmission';
 import SubmissionResult from './components/SubmissionResult';
+import LiveProgress from './components/LiveProgress';
+import CourseOverview from './components/CourseOverview';
 
 // Context
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -23,7 +25,7 @@ function Navigation() {
       <Toolbar>
         <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
           <RouterLink to="/" style={{ color: 'white', textDecoration: 'none' }}>
-            Code Competition Platform
+            Cadence
           </RouterLink>
         </Typography>
         <Button color="inherit" component={RouterLink} to="/">
@@ -33,6 +35,12 @@ function Navigation() {
           <>
             <Button color="inherit" component={RouterLink} to="/teacher">
               Teacher Dashboard
+            </Button>
+            <Button color="inherit" component={RouterLink} to="/teacher/course">
+              Course Overview
+            </Button>
+            <Button color="inherit" component={RouterLink} to="/teacher/live">
+              Notebook View
             </Button>
             <Button color="inherit" onClick={logout}>
               Logout
@@ -59,6 +67,8 @@ function AppContent() {
           <Route path="/submission/:submissionId" element={<SubmissionResult />} />
           <Route path="/teacher/login" element={<TeacherLogin />} />
           <Route path="/teacher" element={<TeacherDashboard />} />
+          <Route path="/teacher/live" element={<LiveProgress />} />
+          <Route path="/teacher/course" element={<CourseOverview />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Container>

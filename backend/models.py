@@ -136,6 +136,83 @@ class StudentCommit(Base):
     github_repo = relationship("GitHubRepo", back_populates="student_commits")
     commit_test_results = relationship("CommitTestResult", back_populates="student_commit")
 
+class Lesson(Base):
+    __tablename__ = "lessons"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    join_code = Column(String(64), nullable=False, unique=True, index=True)
+    teacher_token = Column(String(128), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Course(Base):
+    __tablename__ = "courses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    join_code = Column(String(64), nullable=False, unique=True, index=True)
+    teacher_token = Column(String(128), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CourseNotebook(Base):
+    """Many-to-many join: a notebook (Lesson) can belong to multiple courses.
+    Needed because the all-time stats view aggregates across every course a
+    notebook has appeared in."""
+    __tablename__ = "course_notebooks"
+
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id"), primary_key=True)
+    lesson_id = Column(UUID(as_uuid=True), ForeignKey("lessons.id"), primary_key=True)
+    order_index = Column(Integer, default=0)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Checkpoint(Base):
+    __tablename__ = "checkpoints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lesson_id = Column(String(255), nullable=False, index=True)
+    checkpoint_id = Column(String(255), nullable=False)
+    comparator = Column(String(50), nullable=False)
+    expected_payload = Column(Text, nullable=False)
+    hint = Column(Text, nullable=True)
+    order_index = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint("comparator IN ('exact', 'numeric', 'set', 'regex')", name="ck_checkpoint_comparator"),
+    )
+
+
+class LessonSession(Base):
+    __tablename__ = "lesson_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # For standalone notebooks: the lesson the student joined directly.
+    # For course enrollments: the notebook they most recently switched to
+    # via `%competition_notebook`; nullable until they pick one.
+    lesson_id = Column(String(255), nullable=True, index=True)
+    course_id = Column(String(255), nullable=True, index=True)
+    display_name = Column(String(255), nullable=False)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AttemptEvent(Base):
+    __tablename__ = "attempt_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("lesson_sessions.id"), nullable=False, index=True)
+    lesson_id = Column(String(255), nullable=False, index=True)
+    checkpoint_id = Column(String(255), nullable=False, index=True)
+    attempt_num = Column(Integer, nullable=False)
+    submitted_value = Column(Text, nullable=True)
+    is_correct = Column(Boolean, nullable=False)
+    elapsed_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class CommitTestResult(Base):
     __tablename__ = "commit_test_results"
     

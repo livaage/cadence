@@ -222,4 +222,171 @@ class StudentCommitWithResults(BaseModel):
     student_commit: StudentCommit
     commit_test_results: List[CommitTestResult]
     github_repo: GitHubRepo
-    problem: Problem 
+    problem: Problem
+
+
+# Checkpoint / lesson-progress schemas
+class LessonCreate(BaseModel):
+    name: str
+    # Optional preferred codes (teacher can pick memorable ones). Server
+    # rejects on collision so the client can retry with its default generator.
+    join_code: Optional[str] = None
+    teacher_token: Optional[str] = None
+
+
+class LessonSummary(BaseModel):
+    id: UUID
+    name: str
+    join_code: str
+    teacher_token: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LessonPublicSummary(BaseModel):
+    """What a student's client sees after joining — no teacher_token."""
+    id: UUID
+    name: str
+    join_code: str
+
+
+class CheckpointSummary(BaseModel):
+    checkpoint_id: str
+    comparator: str
+    expected_payload: str
+    hint: Optional[str] = None
+    order_index: int
+
+
+class CheckpointRegister(BaseModel):
+    checkpoint_id: str
+    comparator: str  # "exact" | "numeric" | "set" | "regex"
+    expected_payload: str  # JSON-encoded; shape depends on comparator
+    hint: Optional[str] = None
+    order_index: int = 0
+
+
+class SessionStart(BaseModel):
+    display_name: str
+
+
+class SessionStartResponse(BaseModel):
+    session_id: UUID
+    lesson_id: str
+    display_name: str
+
+
+class CheckRequest(BaseModel):
+    session_id: UUID
+    checkpoint_id: str
+    submitted_value: str  # JSON-encoded representation of the student's answer
+    elapsed_ms: Optional[int] = None  # set by %%time_check; None for plain check()
+
+
+class CheckResponse(BaseModel):
+    is_correct: bool
+    attempt_num: int
+    elapsed_ms: Optional[int] = None
+    hint: Optional[str] = None
+
+
+class CheckpointLiveStats(BaseModel):
+    checkpoint_id: str
+    order_index: int
+    attempted: int  # distinct sessions that tried
+    solved: int  # distinct sessions that got it right
+    total_attempts: int
+    attempts_histogram: dict  # {"1": 10, "2": 4, "3+": 2, "unsolved": 3}
+    common_wrong: List[dict]  # [{"value": "...", "count": 4}]
+    # Correct-attempt timing histogram (only populated when %%time_check was used).
+    # Keys are fixed time buckets; value is count of correct attempts in that bucket.
+    timing_histogram: dict
+    timing_samples: int  # how many attempts contributed to the timing histogram
+
+
+class LessonSummaryStats(BaseModel):
+    """Lesson-wide aggregates for the top of the dashboard."""
+    total_sessions: int
+    total_checkpoints: int
+    total_attempts: int
+    total_solved_pairs: int  # sum of (session, checkpoint) that were solved at least once
+    possible_pairs: int  # total_sessions * total_checkpoints
+    solve_rate_pct: float  # total_solved_pairs / possible_pairs * 100
+    completion_histogram: dict  # {"0": n, "1": n, ... "<total_checkpoints>": n}
+    top_wrong_overall: List[dict]  # [{"checkpoint_id": "...", "value": "...", "count": N}]
+
+
+class LiveProgressResponse(BaseModel):
+    lesson_id: str
+    lesson_name: str
+    join_code: str
+    active_sessions: int
+    summary: LessonSummaryStats
+    checkpoints: List[CheckpointLiveStats]
+
+
+# ---------------------------------------------------------------------------
+# Course-level schemas
+# ---------------------------------------------------------------------------
+
+class CourseCreate(BaseModel):
+    name: str
+    join_code: Optional[str] = None
+    teacher_token: Optional[str] = None
+
+
+class CourseSummary(BaseModel):
+    id: UUID
+    name: str
+    join_code: str
+    teacher_token: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CoursePublicSummary(BaseModel):
+    id: UUID
+    name: str
+    join_code: str
+    notebooks: List[dict]  # [{"id": "...", "name": "...", "join_code": "...", "order_index": N}]
+
+
+class CourseAddNotebook(BaseModel):
+    """Add an existing Lesson (by its teacher_token) to the course."""
+    lesson_teacher_token: str
+    order_index: int = 0
+
+
+class RotateTokenRequest(BaseModel):
+    """Mint a fresh teacher_token (and optionally a fresh join_code) for a
+    leaked-credential scenario. The old token is what authorises the call."""
+    rotate_join_code: bool = False
+
+
+class CourseNotebookStat(BaseModel):
+    lesson_id: str
+    name: str
+    order_index: int
+    students_here_now: int  # enrollments whose current_notebook_id == this lesson
+    total_attempts: int
+    solved_rate_pct: float  # of sessions that touched this notebook, % who solved every checkpoint
+
+
+class CourseLiveResponse(BaseModel):
+    course_id: str
+    course_name: str
+    join_code: str
+    total_enrollments: int
+    not_started: int  # enrolled but no current_notebook_id yet
+    notebooks: List[CourseNotebookStat]
+    overall_completion_histogram: dict  # keys are # total checkpoints solved across whole course
+
+
+class SetCurrentNotebookRequest(BaseModel):
+    """Student signals which notebook they are on (by lesson join_code or id)."""
+    lesson_id: Optional[str] = None
+    join_code: Optional[str] = None 
