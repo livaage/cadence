@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- Variant 8: A little figure hopping up steps — playful "progress" -->
+  <g transform="translate(10, 16)">
+    <!-- Three rising step blocks in indigo, rounded -->
+    <rect x="0" y="32" width="14" height="14" rx="2" fill="#4338ca"/>
+    <rect x="14" y="20" width="14" height="26" rx="2" fill="#4338ca"/>
+    <rect x="28" y="8" width="14" height="38" rx="2" fill="#4338ca"/>
+    <!-- A cheerful amber dot mid-hop above the top step -->
+    <circle cx="46" cy="2" r="5" fill="#f59e0b"/>
+    <!-- Dashed arc trailing from somewhere on the lower step to the dot -->
+    <path d="M 6 28 Q 28 -2 44 2"
+          fill="none"
+          stroke="#f59e0b"
+          stroke-width="1.5"
+          stroke-dasharray="2 3"
+          stroke-linecap="round"
+          opacity="0.55"/>
+  </g>
+  <text x="68" y="52" font-family="Inter, system-ui, sans-serif" font-size="36" font-weight="700" fill="#0f172a" letter-spacing="-0.5">Cadence</text>
+</svg>

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, ForeignKey, CheckConstraint, UniqueConstraint, LargeBinary
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -82,12 +82,24 @@ class TestResult(Base):
 
 class Teacher(Base):
     __tablename__ = "teachers"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(String(255), unique=True, nullable=False)
-    password_hash = Column(String(255), nullable=False)
+    # Nullable: OAuth-only accounts have no local password.
+    password_hash = Column(String(255), nullable=True)
     email = Column(String(255), unique=True, nullable=False)
+    display_name = Column(String(255), nullable=True)
+    # OAuth subject identifiers. NULL when the teacher hasn't linked that provider.
+    github_id = Column(String(64), unique=True, nullable=True, index=True)
+    google_id = Column(String(64), unique=True, nullable=True, index=True)
     is_active = Column(Boolean, default=True)
+    # When the teacher self-closed the account. Hard-deletion follows ~30 days
+    # later via the cleanup job. NULL = the account is open.
+    closed_at = Column(DateTime, nullable=True, index=True)
+    # When the teacher accepted the Terms. Signup sets this immediately — the
+    # form copy says "you also agree to the Terms and Privacy notice". Lets
+    # Jupyter skip its local attestation prompt for logged-in users.
+    accepted_terms_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class GitHubRepo(Base):
@@ -143,6 +155,13 @@ class Lesson(Base):
     name = Column(String(255), nullable=False)
     join_code = Column(String(64), nullable=False, unique=True, index=True)
     teacher_token = Column(String(128), nullable=False, unique=True, index=True)
+    # Nullable: lessons created before auth was added are token-only.
+    # Lessons created by an authenticated teacher get this set so /lessons/mine
+    # and the dashboard library can surface them.
+    teacher_id = Column(UUID(as_uuid=True), ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Per-session retention measured from the session's last_seen_at. Default
+    # matches the quick-mode default in the design doc (7 days).
+    session_retention_days = Column(Integer, nullable=False, default=7)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -153,6 +172,12 @@ class Course(Base):
     name = Column(String(255), nullable=False)
     join_code = Column(String(64), nullable=False, unique=True, index=True)
     teacher_token = Column(String(128), nullable=False, unique=True, index=True)
+    # Nullable: courses created before auth was added are token-only.
+    # New courses created by an authenticated teacher get this set.
+    teacher_id = Column(UUID(as_uuid=True), ForeignKey("teachers.id", ondelete="SET NULL"), nullable=True, index=True)
+    # Per-session retention measured from the session's last_seen_at. Default
+    # matches the course-mode default in the design doc (~3 months).
+    session_retention_days = Column(Integer, nullable=False, default=90)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -175,13 +200,28 @@ class Checkpoint(Base):
     lesson_id = Column(String(255), nullable=False, index=True)
     checkpoint_id = Column(String(255), nullable=False)
     comparator = Column(String(50), nullable=False)
-    expected_payload = Column(Text, nullable=False)
+    expected_payload = Column(Text, nullable=True)  # null when comparator='manual'
     hint = Column(Text, nullable=True)
+    # `cadence.show_hint()` only succeeds once the student has made at least
+    # `hint_after_attempts` attempts (default 1 = available from the first wrong try).
+    hint_after_attempts = Column(Integer, nullable=False, default=1)
+    # Optional solution-reveal: students can request `solution_value` and/or
+    # `solution_code` once they've made at least `reveal_after_attempts` attempts
+    # against this checkpoint. Null `reveal_after_attempts` disables the feature.
+    reveal_after_attempts = Column(Integer, nullable=True)
+    solution_value = Column(Text, nullable=True)
+    solution_code = Column(Text, nullable=True)
+    # Opt-in: when true, students can submit code via `%%cadence_submit` and the
+    # teacher sees a syntax-highlighted feed in the dashboard.
+    allow_submissions = Column(Boolean, nullable=False, default=False)
     order_index = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        CheckConstraint("comparator IN ('exact', 'numeric', 'set', 'regex')", name="ck_checkpoint_comparator"),
+        CheckConstraint(
+            "comparator IN ('exact', 'numeric', 'set', 'regex', 'manual')",
+            name="ck_checkpoint_comparator",
+        ),
     )
 
 
@@ -211,6 +251,58 @@ class AttemptEvent(Base):
     is_correct = Column(Boolean, nullable=False)
     elapsed_ms = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CodeSubmission(Base):
+    """A student-submitted artefact for a checkpoint — code, image, or both.
+    Multiple submissions per (session, checkpoint) are allowed; students iterate."""
+    __tablename__ = "code_submissions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("lesson_sessions.id"), nullable=False, index=True)
+    lesson_id = Column(String(255), nullable=False, index=True)
+    checkpoint_id = Column(String(255), nullable=False, index=True)
+    code = Column(Text, nullable=True)  # nullable: image-only submissions are valid
+    language = Column(String(32), nullable=False, default="python")
+    # Optional image attachment — matplotlib figures, screenshots, sketches.
+    image_data = Column(LargeBinary, nullable=True)
+    image_mime = Column(String(64), nullable=True)  # e.g. 'image/png'
+    submitted_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SolutionReveal(Base):
+    """First time a session called `cadence.show_solution(checkpoint_id)`.
+
+    Unique on (session_id, checkpoint_id) so repeat lookups don't inflate
+    the counter — we want distinct students who used the reveal."""
+    __tablename__ = "solution_reveals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("lesson_sessions.id"), nullable=False, index=True)
+    lesson_id = Column(String(255), nullable=False, index=True)
+    checkpoint_id = Column(String(255), nullable=False, index=True)
+    revealed_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "checkpoint_id", name="uq_solution_reveal_session_cp"),
+    )
+
+
+class AccessLog(Base):
+    """Significant actions on student data: deletions, exports, deletion
+    authorizations. Not a high-frequency read log (dashboard polling is excluded
+    intentionally — too noisy and unhelpful). 12-month retention enforced by
+    the cleanup job."""
+    __tablename__ = "access_log"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    occurred_at = Column(DateTime, default=datetime.utcnow, index=True)
+    action = Column(String(64), nullable=False)
+    actor_kind = Column(String(32), nullable=False)  # 'teacher' | 'student' | 'system'
+    actor_id = Column(String(255), nullable=True)
+    target_kind = Column(String(32), nullable=False)  # 'session' | 'lesson' | 'course'
+    target_id = Column(String(255), nullable=False, index=True)
+    details = Column(Text, nullable=True)
 
 
 class CommitTestResult(Base):

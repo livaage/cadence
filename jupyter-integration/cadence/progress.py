@@ -15,8 +15,11 @@ from .api import CadenceAPI
 class CheckResult:
     is_correct: bool
     attempt_num: int
-    hint: Optional[str] = None
     elapsed_ms: Optional[int] = None
+    is_manual: bool = False
+    hint_available: bool = False
+    solution_available: bool = False
+    checkpoint_id: Optional[str] = None  # set by check() so the prompts can mention it
 
     def __bool__(self) -> bool:
         return self.is_correct
@@ -29,16 +32,46 @@ class CheckResult:
             return f" in {ms} ms"
         return f" in {ms / 1000:.2f} s"
 
+    def _hint_prompt_html(self) -> str:
+        if not self.hint_available or not self.checkpoint_id:
+            return ""
+        return (
+            f'<div style="margin-top: 4px; color: #b45309;">💡 Need a hint? '
+            f'Run <code>cadence.show_hint("{self.checkpoint_id}")</code> '
+            f'<small style="color: #666;">'
+            f'(add <code>import cadence</code> at the top of the notebook if you haven\'t already)'
+            f'</small></div>'
+        )
+
+    def _reveal_html(self) -> str:
+        if not self.solution_available or not self.checkpoint_id:
+            return ""
+        return (
+            f'<div style="margin-top: 4px; color: #6b21a8;">💡 Show solution? '
+            f'Run <code>cadence.show_solution("{self.checkpoint_id}")</code> '
+            f'<small style="color: #666;">'
+            f'(add <code>import cadence</code> at the top of the notebook if you haven\'t already)'
+            f'</small></div>'
+        )
+
     def _repr_html_(self) -> str:
+        if self.is_manual:
+            return (
+                f'<div style="color: green;">✅ Marked done '
+                f'(attempt {self.attempt_num}{self._format_elapsed()})</div>'
+                + self._reveal_html()
+            )
         if self.is_correct:
             return (
                 f'<div style="color: green;">✅ Correct '
                 f'(attempt {self.attempt_num}{self._format_elapsed()})</div>'
+                + self._reveal_html()
             )
-        hint_html = f'<br><em>Hint: {self.hint}</em>' if self.hint else ''
         return (
             f'<div style="color: #b45309;">❌ Not quite '
-            f'(attempt {self.attempt_num}{self._format_elapsed()}){hint_html}</div>'
+            f'(attempt {self.attempt_num}{self._format_elapsed()})</div>'
+            + self._hint_prompt_html()
+            + self._reveal_html()
         )
 
 
@@ -85,6 +118,13 @@ def current_session() -> Optional[dict]:
     if not _state["session_id"]:
         return None
     return dict(_state)
+
+
+def clear_session() -> None:
+    """Drop the active session — used after %cadence_delete_my_data so the
+    kernel no longer refers to a session_id that has just been wiped server-side."""
+    for k in _state:
+        _state[k] = None
 
 
 def set_teacher(
@@ -144,6 +184,178 @@ def check(checkpoint_id: str, value: Any, elapsed_ms: Optional[int] = None) -> C
     return CheckResult(
         is_correct=bool(resp.get("is_correct")),
         attempt_num=int(resp.get("attempt_num", 0)),
-        hint=resp.get("hint"),
         elapsed_ms=resp.get("elapsed_ms"),
+        is_manual=bool(resp.get("is_manual")),
+        hint_available=bool(resp.get("hint_available")),
+        solution_available=bool(resp.get("solution_available")),
+        checkpoint_id=checkpoint_id,
     )
+
+
+def submit_image(checkpoint_id: str, figure_or_bytes: Any, code: Optional[str] = None) -> None:
+    """Submit a plot/image to a checkpoint that has `--allow-submissions`.
+
+    Accepts a matplotlib Figure (or anything with a savefig method), a PIL Image,
+    or raw PNG bytes. Optionally also send a code snippet alongside the image —
+    useful when the figure is the headline but the code is the receipt.
+
+    Example:
+        fig, ax = plt.subplots(); ax.plot(x, y); ax.set_title("My finding")
+        cadence.submit_image("discovery.plot", fig)
+    """
+    import io, base64 as _b64
+    api = _state["api"]
+    session_id = _state["session_id"]
+    if not api or not session_id:
+        raise RuntimeError('No active session. Run `%cadence_session <join_code> "<your name>"` first.')
+
+    # Coerce common figure objects to raw PNG bytes
+    if hasattr(figure_or_bytes, "savefig"):  # matplotlib Figure / Axes
+        buf = io.BytesIO()
+        figure_or_bytes.savefig(buf, format="png", bbox_inches="tight", dpi=120)
+        png_bytes = buf.getvalue()
+    elif hasattr(figure_or_bytes, "save") and hasattr(figure_or_bytes, "mode"):  # PIL Image
+        buf = io.BytesIO()
+        figure_or_bytes.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+    elif isinstance(figure_or_bytes, (bytes, bytearray)):
+        png_bytes = bytes(figure_or_bytes)
+    else:
+        raise TypeError(
+            f"submit_image expected a matplotlib Figure, PIL Image, or bytes — got {type(figure_or_bytes).__name__}"
+        )
+
+    if len(png_bytes) > 1_000_000:
+        raise ValueError(f"Image too large ({len(png_bytes) // 1024} KB > 1 MB limit). Lower the dpi or crop the figure.")
+
+    image_b64 = _b64.b64encode(png_bytes).decode("ascii")
+    try:
+        api.submit_code(
+            session_id,
+            checkpoint_id,
+            code=code,
+            language="python",
+            image_data_b64=image_b64,
+            image_mime="image/png",
+        )
+    except Exception as e:
+        try:
+            from IPython.display import HTML, display  # type: ignore
+            return display(HTML(f'<div style="color: red;">❌ Image submission failed: {e}</div>'))
+        except ImportError:
+            raise
+
+    try:
+        from IPython.display import HTML, display  # type: ignore
+        display(HTML(
+            f'<div style="color: #6b21a8;">📤 Plot submitted to '
+            f'<code>{checkpoint_id}</code> ({len(png_bytes) // 1024} KB). The teacher can see it on the dashboard.</div>'
+        ))
+    except ImportError:
+        pass
+
+
+def mark_done(checkpoint_id: str) -> CheckResult:
+    """Student-side: mark a manual (self-attested) checkpoint as done.
+
+    Use this for tasks where there's no single right answer — e.g. "plot the
+    distribution and describe what you see" or "experiment with three different
+    parameter values". The teacher configures the checkpoint with
+    `--comparator manual` and the dashboard counts whoever calls this as having
+    completed the task. There's no validation; trust is the contract.
+    """
+    return check(checkpoint_id, "(marked done)")
+
+
+def show_hint(checkpoint_id: str):
+    """Fetch and render the teacher's hint for `checkpoint_id`.
+
+    Only works once the student has made enough attempts (the threshold is set
+    per-checkpoint by the teacher via `--hint-after-attempts N`, default 1).
+    """
+    api = _state["api"]
+    session_id = _state["session_id"]
+    if not api or not session_id:
+        raise RuntimeError(
+            'No active session. Run `%cadence_session <join_code> "<your name>"` first.'
+        )
+    try:
+        from IPython.display import HTML, display  # type: ignore
+    except ImportError:
+        HTML = None
+        display = print
+    try:
+        resp = api.get_hint(session_id, checkpoint_id)
+    except Exception as e:
+        msg = str(e)
+        if HTML is not None:
+            return display(HTML(f'<div style="color: #b45309;">🔒 {msg}</div>'))
+        return display(f"🔒 {msg}")
+
+    html = (
+        f'<div style="border-left: 3px solid #b45309; padding: 8px 12px; '
+        f'background: #fffbeb; margin: 4px 0;">'
+        f'<strong>💡 Hint for <code>{checkpoint_id}</code></strong>'
+        f'<div style="margin-top: 4px;">{resp["hint"]}</div>'
+        f'</div>'
+    )
+    if HTML is not None:
+        return display(HTML(html))
+    return display(html)
+
+
+def show_solution(checkpoint_id: str):
+    """Fetch and render the worked solution for `checkpoint_id`.
+
+    Only works once the student has made enough attempts (the threshold
+    is set per-checkpoint by the teacher via `--reveal-after N`).
+    """
+    api = _state["api"]
+    session_id = _state["session_id"]
+    if not api or not session_id:
+        raise RuntimeError(
+            'No active session. Run `%cadence_session <join_code> "<your name>"` first.'
+        )
+    try:
+        from IPython.display import HTML, display  # type: ignore
+    except ImportError:
+        HTML = None
+        display = print
+    try:
+        resp = api.get_solution(session_id, checkpoint_id)
+    except Exception as e:
+        msg = str(e)
+        if HTML is not None:
+            return display(HTML(f'<div style="color: #b45309;">🔒 {msg}</div>'))
+        return display(f"🔒 {msg}")
+
+    import html as _html
+    parts = [f'<div style="border-left: 3px solid #6b21a8; padding: 8px 12px; '
+             f'background: #faf5ff; margin: 4px 0;">'
+             f'<strong>💡 Solution for <code>{checkpoint_id}</code></strong>']
+    if resp.get("solution_value"):
+        parts.append(
+            f'<div style="margin-top: 6px;"><em>Expected answer:</em> '
+            f'<code>{_html.escape(str(resp["solution_value"]))}</code></div>'
+        )
+    if resp.get("solution_code"):
+        # Teachers sometimes pass `\n` as literal escape sequences when using
+        # the line magic (--solution-code "...\n..."); interpret those as real
+        # newlines so the code block renders multi-line. HTML-escape the
+        # content so any `<`, `>`, `&` in the snippet don't break the layout.
+        raw = str(resp["solution_code"]).replace("\\n", "\n").replace("\\t", "\t")
+        escaped = _html.escape(raw)
+        parts.append(
+            f'<div style="margin-top: 6px;"><em>Worked solution:</em></div>'
+            f'<pre style="background: #1f2937; color: #f9fafb; padding: 12px; '
+            f"border-radius: 4px; overflow: auto; font-size: 0.85em; "
+            f"font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace; "
+            f'line-height: 1.45; white-space: pre-wrap; margin: 4px 0;">'
+            f'{escaped}</pre>'
+        )
+    parts.append('</div>')
+    html = ''.join(parts)
+    if HTML is not None:
+        return display(HTML(html))
+    # Fallback for non-IPython environments
+    return display(html)

@@ -2,6 +2,56 @@
 
 Live student progress dashboards for Jupyter-based teaching. Teachers drop a few `check(...)` calls into ordinary `.ipynb` files; students get inline ✅/❌ feedback as they work; teachers watch a real-time dashboard of per-checkpoint solve rates, timing histograms, common wrong answers, and (for multi-notebook lessons) which notebook each student is currently on.
 
+![Notebook dashboard with the section-grouped checkpoints, solution & submission chips, roster, and the new-activity banner](docs/images/dashboard-notebook.png)
+
+> Notebook view of a Higgs-discovery lab — section-grouped checkpoints, indigo-themed histograms, hover-revealed names on wrong answers, and the "N new attempts since you last looked" banner that wakes a returning teacher up to what's happened.
+
+## ⏱ Try Cadence in 15 minutes
+
+The fastest way to feel the product. You'll act as both the teacher and a student in two separate Jupyter notebooks, watching the dashboard react in real time.
+
+**1. Boot the stack** (one-time, ~3 min on first run):
+```bash
+docker compose up -d --build           # backend + frontend + Postgres + Redis
+pip install -e jupyter-integration     # the %cadence_* magics + cadence.check / mark_done / submit_image
+```
+
+**2. Open `demo-teacher-setup.ipynb`** — runs `%cadence_create_lesson` then bulk-registers six checkpoints (numpy warmups + a Higgs-discovery flow) via `%%cadence_register_yaml`. The output prints:
+- a **join code** (something like `soup-river-42`) that students need
+- a **dashboard URL** with your `teacher_token` baked in — bookmark it
+
+**3. Open the dashboard URL in a browser tab.** You'll see an empty lesson — the four big-number stats all read zero. Leave the tab open.
+
+**4. Open `demo-with-cadence.ipynb`** (a second Jupyter tab — pretend you're a student). Replace `<JOIN_CODE>` on line ~7 with your join code from step 2. Replace `"Your name here"` with anything. Run cells top-to-bottom and watch the dashboard tab update every 3 seconds.
+
+**5. Browse `http://localhost:3000/teacher/library`.** Empty state. Click **+ Add course / lesson**, paste your teacher token from step 2 — your lesson appears as a card.
+
+### Features to verify while you're at it
+
+If everything works, all of these should be reachable from the two notebooks + the dashboard above. Tick them off as you go:
+
+- [ ] **Inline answer feedback** — `check(...)` returns ✅ when correct, ❌ with a hint when wrong.
+- [ ] **Numeric / set / exact / manual comparators** — exercised one per cell in `demo-with-cadence.ipynb`.
+- [ ] **Sectioned dashboard** — `setup` and `discovery` collapse independently; each shows aggregate solve rate.
+- [ ] **Difficulty chips** — Easier / Average / Harder relative to siblings, hover for the raw avg-attempts number.
+- [ ] **Solution reveal** — submit 3 wrong answers to `discovery.higgs-peak`; you get the 💡 reveal hint; call `cadence.show_solution("discovery.higgs-peak")` to see it.
+- [ ] **Code submission** — the `%%cadence_submit discovery.higgs-peak` cell ships your code; the dashboard's per-checkpoint Submissions panel renders it with syntax highlighting.
+- [ ] **Plot submission** — call `cadence.submit_image("discovery.higgs-peak", fig)` from anywhere; the dashboard renders the figure inline above the code.
+- [ ] **Manual mark-done** — `mark_done("discovery.reflect")` returns ✅ Marked done; dashboard reads `1/1 marked done`.
+- [ ] **Roster + chronology** — expand the Roster card; click a student row to see their per-checkpoint progress + the chronological log of every attempt with timestamps.
+- [ ] **Currently-on chip** — each student row shows which checkpoint they last touched.
+- [ ] **Wrong-answer attribution** — hover any common-wrong row (`125 ×11`) to see the students who submitted that value.
+- [ ] **Timing tooltips** — hover any green timing bar to see who solved in that bucket.
+- [ ] **Privacy toggles** — flip **Show student roster** OFF: roster panel disappears, hover-tooltips stop showing names. Flip back on; flip **Show outlier names** on to see inline "Fewest / Most attempts" rows.
+- [ ] **Stuck-student alerts** — toggle on, grant browser permission. Submit 3 wrong answers in a row to one checkpoint; a desktop notification fires.
+- [ ] **"N new attempts since you last looked" banner** — close the dashboard tab, run a few more `check()` calls in the student notebook, re-open the dashboard — the banner shows you what happened while you were away.
+- [ ] **Scope toggle** — change between Standalone / This course / All-time on the notebook view (only when accessed via the course drill-in).
+- [ ] **Polling pause** — leave the dashboard idle 5 min; the polling chip flips to amber "class quiet — polling every 15s". Switch tabs away; polling stops entirely.
+- [ ] **Rotate token** — click **Rotate token** in the dashboard header. The old URL is dead immediately; the success banner shows the new one.
+- [ ] **Library** — `/teacher/library` shows cards for every saved course/lesson with their live student count + solve rate.
+
+If anything in that list doesn't behave as described, that's a real bug — please flag it.
+
 ## ✨ Core ideas
 
 - **Drop-in, not bolt-on.** Teachers paste two lines into any existing notebook to register checkpoints. No magic structure, no separate "problem template" file required.
@@ -239,6 +289,20 @@ In a notebook the equivalent of the rotate command is:
 ```
 Add `--course` to either if the active context is a course rather than a single notebook.
 
+Or **from the dashboard itself**: click the small **Rotate token** link in the live-dashboard header. A confirm dialog explains the consequence (old URL dies immediately); a success banner shows the new dashboard URL ready to copy. Hold Alt/Option while clicking to also rotate the join code.
+
+#### The library page — managing multiple courses
+
+The browser-side counterpart to `~/.cadence/lessons.yaml`. Navigate to:
+
+```
+http://localhost:3000/teacher/library
+```
+
+You'll see a card for every course and lesson you've added to this browser, with live student count, total attempts, and current solve rate. Click a card → opens that lesson/course's dashboard. Click **+ Add course / lesson** at the top right and paste a `teacher_token` (or a full dashboard URL) to add another. The "Try with demo data" button on the empty state loads the three seeded demo courses.
+
+Storage is browser-local (`localStorage`) for now — the cross-device version arrives with teacher accounts (see [docs/teacher-accounts-design.md](docs/teacher-accounts-design.md)). Clearing site data wipes the library; the lessons themselves stay on the server.
+
 ### 3a. Teacher: create a lesson (one-time, at home)
 
 ```python
@@ -283,11 +347,179 @@ Still in the teacher notebook (the same one, or a new one — just re-activate t
 %cadence_register email-format --comparator regex \
     --expected '{"pattern": "^[^@]+@[^@]+\\.[^@]+$"}'
 
+# Manual — no auto-check; student calls cadence.mark_done() to self-attest
+%cadence_register reflect --comparator manual \
+    --hint "Briefly describe what the peak shape tells you."
+
 # Ordering in the dashboard
 %cadence_register fib-10 --order 1 --comparator numeric --expected '{"value": 55}'
 ```
 
 Re-running with the same `checkpoint_id` updates the record — safe to iterate.
+
+#### Registering many checkpoints at once
+
+For longer labs, retyping `%cadence_register` per row gets tedious. There's a cell magic that takes a YAML block:
+
+```python
+%%cadence_register_yaml
+- id: setup.mean-value
+  comparator: numeric
+  expected: {value: 49.5, tolerance: 0.001}
+  hint: average of 0..99
+  order: 1
+- id: discovery.higgs-peak
+  comparator: exact
+  expected: 125
+  reveal_after: 3
+  solution_value: '125'
+  solution_code: |
+    bin_edges = np.arange(100, 151)
+    counts, _ = np.histogram(m_gg, bins=bin_edges)
+    int(bin_edges[np.argmax(counts)])
+  allow_submissions: true
+- id: discovery.reflect
+  comparator: manual
+  hint: Describe the peak shape.
+```
+
+Field names mirror the `%cadence_register` flags in snake_case (`reveal_after`, `solution_value`, `solution_code`, `allow_submissions`, `order`). The magic prints a per-row pass/fail summary so a single typo doesn't sink the whole batch. Re-running the same YAML is safe — checkpoints upsert by `id`.
+
+#### Manual ("mark as done") checkpoints
+
+For open-ended tasks with no single right answer — reflections, plots, "experiment with three values", etc. — register with `--comparator manual` and **omit** `--expected`. The student finishes by calling:
+
+```python
+cadence.mark_done("reflect")
+```
+
+The cell prints `✅ Marked done (attempt 1)` and the dashboard counts it like any solve, with two differences:
+- The card header shows a small `✋ manual` chip and reads `N/M marked done` instead of `N/M solved`
+- No difficulty chip (everyone "solves" first try), no common-wrong list (wrong is impossible)
+
+Setting `--expected` on a manual checkpoint is an error — there's nothing to compare against. Calling `mark_done()` on an auto-checked checkpoint records a wrong attempt instead. The two flows are intentionally distinct.
+
+> **Coming later:** plotting / image-uploading / teacher-review comparators will reuse the same checkpoint plumbing — `manual` is just the first in that family.
+
+#### Code submissions (optional)
+
+For any checkpoint, the teacher can opt in to **code submissions** — students send their full solution to the dashboard for the teacher to review or demo on screen. The auto-check still runs as configured (or doesn't, if the comparator is `manual`); submissions are a *separate* channel for the code itself.
+
+Enable with `--allow-submissions` on `%cadence_register`:
+
+```python
+%cadence_register discovery.higgs-peak \
+    --comparator exact --expected '125' \
+    --hint "Watch the bin edges" \
+    --allow-submissions
+```
+
+The student then runs a **cell magic** that executes the cell normally AND ships the source to the teacher:
+
+```python
+%%cadence_submit discovery.higgs-peak
+bin_edges = np.arange(100, 151)
+counts, _ = np.histogram(m_gamma_gamma, bins=bin_edges)
+peak_bin_center = int(bin_edges[np.argmax(counts)])
+print(peak_bin_center)
+```
+
+After the cell runs, the output shows `📤 Code submitted to discovery.higgs-peak`. Multiple submissions per student are allowed — students iterate, the dashboard shows the chronological feed (newest first).
+
+**Teacher view:**
+
+![Submissions panel — three approaches to the same Higgs-peak checkpoint with syntax highlighting](docs/images/dashboard-submissions.png)
+
+- Checkpoint card grows a **`💾 N submissions`** chip in its header
+- Below the wrong-answers section, a collapsible **"Submissions (N)"** panel
+- Each submission renders with VSCode-dark Python syntax highlighting, the submitter's name (or `anonymous` when "Show student roster" is off), a relative timestamp, and a copy-to-clipboard button
+- Useful in live class: open the panel, pick a clever solution, screen-share it as a contrast to the bin-edge confusion you've been discussing
+
+Submitting to a checkpoint without `--allow-submissions` returns a clear error so a student notebook can't silently fail. Submissions are size-capped at 50 KB.
+
+#### Plot / image submissions
+
+Same opt-in (`--allow-submissions` on the checkpoint), different helper. Students can attach a **matplotlib figure** (or PIL image, or raw PNG bytes) to a submission:
+
+```python
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.hist(m_gamma_gamma, bins=range(100, 151))
+ax.set_title("Diphoton invariant mass — found the Higgs")
+
+cadence.submit_image("discovery.higgs-peak", fig,
+                     code="bins = range(100, 151); counts, _ = np.histogram(m_gg, bins=bins)")
+```
+
+The figure is encoded as PNG and shipped to the dashboard. The optional `code=` argument attaches a code snippet to the same submission. Images are size-capped at 1 MB (lower the `dpi=` on `savefig`, or crop the figure, if you hit the limit).
+
+In the dashboard, the same "Submissions (N)" panel renders the figure inline above the code block — useful for plot-driven checkpoints where the headline insight is visual ("show me a histogram with a peak at 125 GeV"). Both `submit_image` and `%%cadence_submit` can target the same checkpoint; the panel mixes text and image submissions in chronological order.
+
+> **Coming later:** automatic marking, exam-style checkpoints, and teacher-side "show this on screen" controls will all build on top of the same `code_submissions` plumbing.
+
+#### Grouping checkpoints into sections (optional)
+
+If a checkpoint id contains a `.` or `/`, Cadence treats the part before the **last** separator as a section name and the rest as the leaf label. The dashboard then groups consecutive same-section cards under a collapsible header. Backward compatible — flat ids still render as before.
+
+```python
+%cadence_register setup.mean-value     --comparator numeric --expected '{"value": 49.5}'
+%cadence_register setup.row-sums       --comparator set     --expected '{"value": [6,22,38]}'
+%cadence_register discovery.higgs-peak --comparator exact   --expected '125' --order 3
+```
+
+In the dashboard:
+- `setup` and `discovery` show as section headers with aggregate solve rate + total attempts.
+- Each header is click-to-collapse so a notebook with 20+ checkpoints stays scannable.
+- Cards inside the section show just the leaf label (`mean-value`, `higgs-peak`).
+
+The top-wrong-answers list still shows fully-qualified ids so a glance tells you which section a mistake lives in.
+
+#### Solution reveals (optional)
+
+A checkpoint can have a teacher-authored **solution** that students unlock once they've made enough attempts. Configure on the same `%cadence_register` line with three new flags:
+
+| Flag | Required? | Meaning |
+|---|---|---|
+| `--reveal-after N` | Yes (to enable reveals) | Student needs `N` attempts before the solution becomes available |
+| `--solution-value "<answer>"` | At least one of `value`/`code` | Short canonical answer — rendered as `<code>` |
+| `--solution-code "<snippet>"` | At least one of `value`/`code` | Fully worked code block — rendered in a syntax-highlighted box |
+
+If you set `--reveal-after` without either of `--solution-value`/`--solution-code`, registration fails — there's nothing to reveal.
+
+```python
+# Both: a short answer plus a worked solution
+%cadence_register discovery.higgs-peak \
+    --comparator exact --expected '125' \
+    --hint "Integer center of the 1-GeV bin with the most events" \
+    --reveal-after 3 \
+    --solution-value 125 \
+    --solution-code "bin_edges = np.arange(100, 151)
+counts, _ = np.histogram(m_gamma_gamma, bins=bin_edges)
+int(bin_edges[np.argmax(counts)])"
+
+# Numerical-answer-only — for fact-recall checkpoints
+%cadence_register half-life --comparator numeric \
+    --expected '{"value": 5.27, "tolerance": 0.01}' \
+    --reveal-after 4 --solution-value "5.27 years (Cobalt-60)"
+
+# Code-only — when the answer is a procedure, not a number
+%cadence_register clean-csv \
+    --comparator set --expected '{"value": ["Alice","Bob"]}' \
+    --reveal-after 5 --solution-code "df = pd.read_csv('data.csv').dropna()
+df['name'].str.strip().tolist()"
+```
+
+**What the student sees** (in their notebook):
+
+After every `check(...)`, once the attempt count reaches `--reveal-after`, the cell output gains a purple hint line:
+
+> 💡 Show solution? Run `cadence.show_solution("discovery.higgs-peak")`
+
+The student runs that helper to fetch and render the worked solution. Calling it earlier than the threshold returns a clear lockout message (`"Solution unlocks after 3 attempts; you have 1."`). Solutions for checkpoints with no reveal configured return 404 — students never know one exists.
+
+**What the teacher sees** (on the dashboard):
+
+Each checkpoint card with a solution wired up gets a pink **`🔓 solution`** chip in its header. Once any student uses the reveal, the chip switches to **`🔓 solution · N viewed`** — at a glance you can tell which checkpoints students are leaning on. The count is scope-aware (standalone / this course / all-time), so you can compare reveal-usage across cohorts.
 
 ### 5. Teacher: self-test before class
 
@@ -340,6 +572,8 @@ The **same notebook file** is reusable across classes — the join code is stabl
 
 ### 7. Teacher: watch the dashboard live
 
+![Course overview — students enrolled, distribution across notebooks, course-wide completion histogram](docs/images/dashboard-course.png)
+
 The dashboard lives at:
 
 ```
@@ -358,10 +592,21 @@ The page polls every 3 s and shows two kinds of information:
 - **Top wrong answers across the lesson** — the five most-repeated wrong answers across every checkpoint, each tagged with its checkpoint id. Use it to spot shared misconceptions.
 
 **Per checkpoint** (one card each):
+- **Difficulty chip** — `Easier` / `Average` / `Harder`, relative to the other checkpoints in this notebook. Hover for the raw `avg attempts to solve`.
+- **🔓 solution chip** — appears when the teacher configured `--reveal-after`. Reads `🔓 solution · after N` until any student uses the reveal, then `🔓 solution · N viewed`. Hover for full detail.
+- **💾 N submissions chip** — appears when the teacher configured `--allow-submissions`. Click the *Submissions (N)* panel below the wrong-answers list to see each student's code in a syntax-highlighted block, with timestamps and copy-to-clipboard.
+- **✋ manual chip** — appears when the comparator is `manual`. The "solved" label switches to "marked done".
 - **Solved / attempted** counts and a solve-rate bar.
-- **Attempts-to-first-correct** histogram: `1st try`, `2nd try`, `3+`, `unsolved`.
+- **Attempts-to-first-correct** histogram: `1st try`, `2nd try`, `3+`, `unsolved`. Hover a bucket to reveal which students are in it (when "Show student roster" is on).
 - **Timing histogram** for first-correct answers — populated when students use `%%cadence_time`; otherwise empty with a one-line hint telling the teacher how to enable it.
-- **Most common wrong answers** (top 5) for that specific checkpoint.
+- **Most common wrong answers** (top 5) for that specific checkpoint — hover any row to reveal who submitted that wrong answer.
+
+Above the per-checkpoint cards is a **Roster** panel (collapsed by default) listing every joined student with their solve count, attempt total, and a chip showing which checkpoint they're currently on. Filter by name to find one student fast.
+
+Three header toggles control name visibility + alerts:
+- **Show student roster** — master switch for any student name appearing in this dashboard. Off = aggregate-only, safe for screen-share.
+- **Show outlier names** — adds an inline `Fewest / Most attempts` line at the bottom of each checkpoint card, naming the top 3 students on each side. Off by default so a screen-share doesn't out a struggling student.
+- **Stuck-student alerts** — opts into **desktop notifications** when a student is actively struggling. Heuristic: 3+ wrong attempts on a single checkpoint in the last 5 minutes with no correct answer. The browser asks for permission once. Notifications fire even when the tab is in the background, so a teacher walking around the room can react. Each (student, checkpoint) pair only notifies once — re-attempts on the same checkpoint don't double-fire. Off by default.
 
 If you ever need to rebuild the URL by hand:
 ```
@@ -510,6 +755,11 @@ If `%cadence_self_test` says a checkpoint is `fail`, the log will tell you why *
 | `❌ No active session. Run %cadence_session …` when calling `check()` | Student forgot to run `%cadence_session` after `%load_ext`. |
 | Dashboard says "No checkpoints registered" | Teacher hasn't run `%cadence_register …` yet, or registered them against a different lesson. |
 | Dashboard stays empty of sessions | Check `docker compose logs backend`; confirm the join code students used matches the one in the dashboard header. |
+| `❌ --reveal-after needs at least one of --solution-value or --solution-code` | Teacher set a reveal threshold but forgot to provide a solution to reveal. Add `--solution-value "…"` and/or `--solution-code "…"`. |
+| `🔒 Solution unlocks after N attempts; you have M.` | Student called `cadence.show_solution(...)` before hitting the configured threshold. Keep trying — the helper will work once `M >= N`. |
+| `🔒 No solution configured for this checkpoint` (404) | Teacher never registered `--reveal-after` for this checkpoint. Either configure one or don't surface `show_solution(...)` to students. |
+| `❌ This checkpoint doesn't accept code submissions` | Teacher hasn't set `--allow-submissions` on this checkpoint. Either turn it on with `%cadence_register --allow-submissions …` or remove the `%%cadence_submit` cell magic from the student notebook. |
+| `❌ Submission too large (50KB limit)` | The cell source exceeds 50 KB. Trim or split the cell. |
 | Cold-start lag on Fly.io | Set `min_machines_running = 1` (~$2–3/mo). |
 
 ## 📋 Installation

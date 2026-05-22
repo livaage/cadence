@@ -23,9 +23,19 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql://competition_user:competition_password@postgres:5432/competition_db
-      SECRET_KEY: your-secret-key-change-in-production
       REDIS_URL: redis://redis:6379
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Auth — these are dev-only values. Real deploys set them via Cloud Run env.
+      JWT_SECRET_KEY: dev-jwt-secret-not-for-production-use
+      CADENCE_WEB_URL: http://localhost:3000
+      CADENCE_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      # Retention cleanup. Setting it locally lets you exercise /admin/cleanup.
+      CLEANUP_SECRET: dev-cleanup-secret
+      # GitHub OAuth — leave unset to fall through to the password-only flow.
+      # Frontend /auth/providers reports github=false and hides the button.
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-http://localhost:8000/auth/github/callback}
     volumes:
       - ./backend:/app
       - ./submissions:/app/submissions
@@ -43,7 +53,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     volumes:
       - ./frontend:/app
       - /app/node_modules

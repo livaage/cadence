@@ -360,3 +360,9 @@ development/
 # ===== Production =====
 production/
 prod/ 
+# ===== Cadence runtime data =====
+# Student data exports from %cadence_export_my_data — these contain real
+# session data and should never be committed.
+cadence-my-data-*.json
+# Local teacher caches written by the Jupyter magic.
+.cadence/

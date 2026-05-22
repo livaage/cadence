@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- Variant 7: A wide friendly C with a small dot hopping out of the opening -->
+  <g transform="translate(8, 14)">
+    <!-- Big rounded C, open on the right -->
+    <path d="M 52 12 A 22 22 0 1 0 52 44"
+          fill="none"
+          stroke="#4338ca"
+          stroke-width="10"
+          stroke-linecap="round"/>
+    <!-- Small dot mid-jump out of the C, in amber for warmth -->
+    <circle cx="56" cy="14" r="5" fill="#f59e0b"/>
+    <!-- Dashed trail behind the dot, hinting at its arc -->
+    <path d="M 22 30 Q 35 18 50 16"
+          fill="none"
+          stroke="#f59e0b"
+          stroke-width="1.5"
+          stroke-dasharray="1.5 3"
+          stroke-linecap="round"
+          opacity="0.6"/>
+  </g>
+  <text x="80" y="52" font-family="Inter, system-ui, sans-serif" font-size="36" font-weight="700" fill="#0f172a" letter-spacing="-0.5">Cadence</text>
+</svg>

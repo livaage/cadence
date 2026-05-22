@@ -1,18 +1,15 @@
-FROM node:18-alpine
-
+# Production build for Cloud Run.
+# Local dev uses Dockerfile.dev (referenced from docker-compose.yml).
+FROM node:18-alpine AS builder
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
 RUN npm install
-
-# Copy source code
 COPY . .
+# Baked into the static bundle. Change + rebuild if the backend URL changes.
+ENV REACT_APP_API_URL=https://cadence-backend-118735504228.us-central1.run.app
+RUN npm run build
 
-# Expose port
-EXPOSE 3000
-
-# Start the application
-CMD ["npm", "start"] 
+FROM nginx:alpine
+COPY --from=builder /app/build /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 8080

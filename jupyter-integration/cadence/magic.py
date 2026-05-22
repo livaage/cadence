@@ -12,12 +12,41 @@ import sys
 import time
 from typing import Optional
 from IPython.core.magic import Magics, magics_class, line_magic, cell_magic
-from IPython.core.magic_arguments import argument, magic_arguments, parse_argstring
+from IPython.core.magic_arguments import argument, magic_arguments, parse_argstring as _ipython_parse_argstring
 from IPython.display import display, HTML, Markdown
 
 from .api import CadenceAPI
 from . import progress as _progress
 from . import lesson_store
+from . import creds_store
+
+
+def _strip_inline_comment(line: str) -> str:
+    """Strip a trailing Python-style `#` comment from a magic line argument.
+
+    IPython line-magics get the whole post-command line as a single string,
+    including any trailing `# ...` comment. argparse then chokes on the `#`
+    as an unknown positional, so commands like
+        %cadence_delete_my_data --yes   # actually wipes
+    fail. Strip the comment here, respecting quoted strings."""
+    if not line:
+        return line
+    in_single = False
+    in_double = False
+    for i, c in enumerate(line):
+        if c == "'" and not in_double:
+            in_single = not in_single
+        elif c == '"' and not in_single:
+            in_double = not in_double
+        elif c == "#" and not in_single and not in_double:
+            return line[:i].rstrip()
+    return line
+
+
+def parse_argstring(magic, line):
+    """Like IPython's parse_argstring, but strip trailing `# ...` comments
+    first so users can annotate magic invocations the same way they do code."""
+    return _ipython_parse_argstring(magic, _strip_inline_comment(line))
 
 
 def _parse_expected(raw: str) -> dict:
@@ -42,6 +71,7 @@ def _parse_expected(raw: str) -> dict:
     if not isinstance(parsed, dict):
         parsed = {"value": parsed}
     return parsed
+
 
 @magics_class
 class CadenceMagic(Magics):
@@ -284,9 +314,9 @@ class CadenceMagic(Magics):
             self._initialize_api()
         if not self.api:
             display(HTML(
-                '<div style="color: red;">❌ Cadence API not reachable at '
-                f'<code>{os.getenv("CADENCE_API_URL", "http://localhost:8000")}</code>. '
-                'Set <code>CADENCE_API_URL</code> or start the backend.</div>'
+                '<div style="color: red;">❌ Could not reach Cadence. '
+                'Check your internet connection and try again. '
+                'If this keeps happening, contact the person who set up your class.</div>'
             ))
             return False
         return True
@@ -296,25 +326,280 @@ class CadenceMagic(Magics):
                          os.getenv("CADENCE_WEB_URL", "http://localhost:3000"))
         return f"{base.rstrip('/')}/teacher/live?token={teacher_token}"
 
+    # ------------------------------------------------------------------
+    # Teacher authentication
+    # ------------------------------------------------------------------
+
+    @magic_arguments()
+    @argument('--username', default=None, help='Username for password login.')
+    @argument('--password', default=None,
+              help='Password for non-interactive login (less safe; prefer the prompt).')
+    @argument('--token', default=None,
+              help='Paste a JWT here (e.g. from web GitHub login) instead of password login.')
+    @line_magic
+    def cadence_login(self, line):
+        """Log in as a teacher. Required for creating courses.
+
+        Three ways:
+          %cadence_login                                     # prompts for username + password
+          %cadence_login --username alice                    # prompts for password only
+          %cadence_login --token <jwt>                       # paste a JWT from web OAuth
+
+        The JWT is stored in ~/.cadence/credentials.yaml (0600 perms).
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_login, line)
+
+        if args.token:
+            jwt = args.token.strip()
+            self.api.set_auth_token(jwt)
+            try:
+                me = self.api.whoami()
+            except Exception as e:
+                self.api.clear_auth_token()
+                return display(HTML(
+                    f'<div style="color: red;">❌ That JWT was rejected: {e}</div>'
+                ))
+            creds_store.set_credentials(jwt, username=me.get("username"))
+            return self._render_login_success(me)
+
+        username = args.username
+        if not username:
+            try:
+                username = input("Cadence username: ").strip()
+            except EOFError:
+                return display(HTML('<div style="color: red;">❌ No username provided.</div>'))
+        if not username:
+            return display(HTML('<div style="color: red;">❌ Username required.</div>'))
+
+        password = args.password
+        if not password:
+            try:
+                import getpass
+                password = getpass.getpass(f"Password for {username}: ")
+            except EOFError:
+                return display(HTML('<div style="color: red;">❌ No password provided.</div>'))
+        if not password:
+            return display(HTML('<div style="color: red;">❌ Password required.</div>'))
+
+        try:
+            resp = self.api.login(username, password)
+        except Exception as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Login failed: {e}</div>'
+            ))
+        jwt = resp["access_token"]
+        self.api.set_auth_token(jwt)
+        try:
+            me = self.api.whoami()
+        except Exception as e:
+            self.api.clear_auth_token()
+            return display(HTML(
+                f'<div style="color: red;">❌ Could not verify JWT after login: {e}</div>'
+            ))
+        creds_store.set_credentials(jwt, username=me.get("username"))
+        self._render_login_success(me)
+
+    def _render_login_success(self, me: dict) -> None:
+        display(HTML(f'''
+            <div style="border: 1px solid #15803d; border-radius: 6px;
+                        padding: 10px; margin: 8px 0; background: #f0fdf4;">
+                <div style="font-weight: 600; color: #15803d;">
+                    ✅ Signed in as {me.get("username", "?")}
+                </div>
+                <div style="margin-top: 4px; font-size: 0.85em; color: #555;">
+                    Email: {me.get("email", "?")}
+                    · Credentials cached to <code>~/.cadence/credentials.yaml</code>.
+                </div>
+            </div>
+        '''))
+
+    @line_magic
+    def cadence_logout(self, line):
+        """Clear the cached teacher JWT for this machine."""
+        creds_store.clear()
+        if self.api:
+            self.api.clear_auth_token()
+        display(HTML(
+            '<div style="color: #555;">👋 Signed out. The JWT cache at '
+            '<code>~/.cadence/credentials.yaml</code> has been removed.</div>'
+        ))
+
+    @line_magic
+    def cadence_whoami(self, line):
+        """Show the currently logged-in teacher (if any)."""
+        if not self._require_api():
+            return
+        if not creds_store.get_jwt():
+            return display(HTML(
+                '<div style="color: #555;">Not signed in. Run '
+                '<code>%cadence_login</code> first.</div>'
+            ))
+        try:
+            me = self.api.whoami()
+        except Exception as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Stored JWT is no longer valid: {e}. '
+                'Run <code>%cadence_login</code> again.</div>'
+            ))
+        display(HTML(f'''
+            <div style="font-size: 0.95em;">
+                Signed in as <strong>{me.get("username")}</strong>
+                (<code>{me.get("email")}</code>)
+            </div>
+        '''))
+
+    # ------------------------------------------------------------------
+    # Teacher attestation (13+ / school authority)
+    # ------------------------------------------------------------------
+
+    _ATTESTATION_TEXT = (
+        "By creating sessions on Cadence you agree to the Terms of Service and "
+        "Privacy Notice. The Terms include the age and consent requirements for "
+        "students (13+, or under your institution's authority with appropriate "
+        "consent in place where local law requires it)."
+    )
+
+    def _check_attestation_or_prompt(self) -> bool:
+        """Return True if the teacher has accepted the Terms.
+
+        - Logged-in teachers (JWT cached) accepted at web signup or via the
+          OAuth callback — skip the local prompt entirely.
+        - For token-only lesson flow (no JWT): check the local cache; if
+          missing, show an inline prompt and accept in the same cell. No
+          re-run needed.
+        """
+        if creds_store.get_jwt():
+            return True
+        if lesson_store.is_attested():
+            return True
+
+        terms_url = self._terms_url()
+        privacy_url = self._privacy_url()
+        display(HTML(f'''
+            <div style="border: 1px solid #b45309; border-radius: 6px;
+                        padding: 12px; margin: 8px 0; background: #fffbeb;">
+                <div style="font-weight: 600; color: #b45309;">
+                    📜 First-time setup
+                </div>
+                <div style="margin: 8px 0;">
+                    {self._ATTESTATION_TEXT}
+                </div>
+                <div style="margin: 8px 0; font-size: 0.9em;">
+                    <a href="{terms_url}" target="_blank">Read the full Terms</a>
+                    · <a href="{privacy_url}" target="_blank">Privacy Notice</a>
+                </div>
+            </div>
+        '''))
+        try:
+            answer = input("Type 'yes' to accept and continue: ").strip().lower()
+        except EOFError:
+            display(HTML('<div style="color: orange;">No input received.</div>'))
+            return False
+        if answer not in ("yes", "y"):
+            display(HTML(
+                '<div style="color: orange;">Not accepted. Nothing was created. '
+                'Re-run the command to try again.</div>'
+            ))
+            return False
+        lesson_store.record_attestation()
+        display(HTML(
+            '<div style="color: #15803d; font-size: 0.9em;">'
+            '✅ Recorded. Continuing…</div>'
+        ))
+        return True
+
+    @line_magic
+    def cadence_accept_terms(self, line):
+        """Pre-record acceptance of the Terms of Service.
+
+        Optional — the create-lesson flow will prompt inline if you haven't
+        accepted yet. Use this if you want to accept up front in a script.
+        Saved to ~/.cadence/terms.yaml.
+        """
+        try:
+            lesson_store.record_attestation()
+        except Exception as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Could not save attestation: {e}</div>'
+            ))
+        display(HTML(
+            '<div style="color: #15803d; font-size: 0.9em;">'
+            '✅ Terms acceptance recorded. To withdraw, delete '
+            '<code>~/.cadence/terms.yaml</code>.</div>'
+        ))
+
+    @staticmethod
+    def _copy_button(text: str, label: str = "Copy") -> str:
+        """Return HTML for a button that copies `text` to the clipboard on click.
+
+        Handles backslashes, single quotes, and newlines so multi-line snippets
+        round-trip correctly via navigator.clipboard.writeText."""
+        safe = (text
+                .replace("\\", "\\\\")
+                .replace("'", "\\'")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r"))
+        return (
+            f'<button onclick="navigator.clipboard.writeText(\'{safe}\');'
+            f'this.innerText=\'✓ Copied\';setTimeout(()=>{{this.innerText=\'{label}\';}},1500);"'
+            f' style="margin-left: 6px; padding: 1px 8px; font-size: 0.75em;'
+            f' background: white; border: 1px solid #ccc; border-radius: 3px;'
+            f' cursor: pointer; vertical-align: middle;">{label}</button>'
+        )
+
+
     def _render_lesson_card(self, lesson: dict, created: bool) -> None:
         title = "Lesson created" if created else "Lesson loaded"
         dash = self._dashboard_url(lesson["teacher_token"])
+        join_code = lesson["join_code"]
+        teacher_token = lesson["teacher_token"]
+        # If the teacher is logged in, the lesson is associated with their
+        # account via teacher_id and shows up automatically in their library.
+        # If not, the only way to find it again is the dashboard URL.
+        logged_in = bool(creds_store.get_jwt())
+        if logged_in:
+            dash_hint = (
+                "(saved to your library automatically — the dashboard has a "
+                "<strong>Display join code</strong> button for projecting in class)"
+            )
+        else:
+            dash_hint = (
+                "(bookmark this — you're not signed in, so the URL is the only way back. "
+                "The dashboard has a <strong>Display join code</strong> button for projecting in class)"
+            )
         display(HTML(f'''
             <div style="border: 1px solid #1976d2; border-radius: 6px;
                         padding: 12px; margin: 8px 0; background: #f4f9ff;">
                 <div style="font-weight: 600; color: #1976d2;">✅ {title}: {lesson["name"]}</div>
-                <div style="margin-top: 6px;">
+                <div style="margin-top: 8px;">
                     Share this join code with students:
-                    <code style="font-size: 1.1em; background: white; padding: 2px 6px; border-radius: 3px;">
-                        {lesson["join_code"]}
-                    </code>
+                    <code style="font-size: 1.1em; background: white; padding: 2px 6px; border-radius: 3px;">{join_code}</code>
+                    {self._copy_button(join_code)}
                 </div>
-                <div style="margin-top: 6px;">
+                <div style="margin-top: 6px; font-size: 0.85em; color: #555;">
+                    Or paste this snippet into the top of the student notebook so
+                    they don't need to type the code:
+                    <pre style="background: white; padding: 8px 10px; margin: 4px 0 0; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; overflow-x: auto;">%load_ext cadence
+%cadence_session {join_code} "your-name"</pre>
+                    {self._copy_button(f'%load_ext cadence\n%cadence_session {join_code} "your-name"', "Copy snippet")}
+                </div>
+                <div style="margin-top: 8px;">
                     🔗 <a href="{dash}" target="_blank">Open live dashboard</a>
-                    &nbsp;<em style="color: #666;">(bookmark this)</em>
+                    {self._copy_button(dash, "Copy URL")}
+                    <em style="color: #666; margin-left: 6px;">{dash_hint}</em>
                 </div>
-                <div style="margin-top: 4px; font-size: 0.85em; color: #666;">
-                    Credentials saved to <code>~/.cadence/lessons.yaml</code>
+                <div style="margin-top: 8px;">
+                    <span style="color: #555;">Teacher token (keep secret):</span>
+                    <code style="font-size: 0.85em; background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
+                    {self._copy_button(teacher_token, "Copy token")}
+                </div>
+                <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
+                    Saved to <code>~/.cadence/lessons.yaml</code> ·
+                    Manage: <code>%cadence_clone_lesson "{lesson["name"]}" --as "..."</code> ·
+                    <code>%cadence_delete_lesson "{lesson["name"]}"</code> ·
+                    <code>%cadence_attach_lesson "{lesson["name"]}" --to "&lt;course&gt;"</code>
                 </div>
             </div>
         '''))
@@ -322,19 +607,71 @@ class CadenceMagic(Magics):
     @magic_arguments()
     @argument('name', help='Lesson name (used as the local cache key)', nargs='+')
     @argument('--code', default=None, help='Override the auto-generated join code')
+    @argument('--force', action='store_true',
+              help='Create a second lesson even if one with this name is already cached.')
     @line_magic
     def cadence_create_lesson(self, line):
         """Create a new lesson and persist credentials to ~/.cadence/lessons.yaml.
 
         Usage:
-            %cadence_create_lesson "Week 3: Fibonacci" [--code my-code]
+            %cadence_create_lesson "Week 3: Fibonacci" [--code my-code] [--force]
+
+        Re-runs are safe: if a lesson with this name is already cached, we
+        load and reactivate it instead of creating a duplicate. Pass --force
+        to create a fresh second lesson with the same name (different
+        teacher_token and join code).
         """
         if not self._require_api():
+            return
+        if not self._check_attestation_or_prompt():
             return
         args = parse_argstring(self.cadence_create_lesson, line)
         name = ' '.join(args.name).strip().strip('"').strip("'")
         if not name:
             return display(HTML('<div style="color: red;">❌ Provide a lesson name</div>'))
+
+        # Rerun protection: if this kernel already has a lesson cached under
+        # the same name, reload it instead of creating a duplicate. The
+        # teacher almost certainly re-ran the cell by accident.
+        cached = lesson_store.get(name)
+        if cached and cached.get("teacher_token") and not args.force:
+            try:
+                resp = self.api.get_lesson_by_token(cached["teacher_token"])
+            except Exception:
+                resp = None
+            if resp:
+                display(HTML(
+                    f'<div style="background: #fffbeb; border-left: 3px solid #b45309; '
+                    f'padding: 8px 12px; margin-bottom: 8px; font-size: 0.9em;">'
+                    f'A lesson named <code>{name}</code> is already cached on this machine — '
+                    f'loaded it instead of creating a duplicate. The existing join code still '
+                    f'works; new students who run <code>%cadence_session</code> with it will '
+                    f'each get their own session attached to this lesson, timestamped '
+                    f'server-side.<br><br>'
+                    f'<strong>When to do something else:</strong><br>'
+                    f'· Same content, fresh cohort (e.g. monthly workshop) and you want a '
+                    f'<em>separate</em> roster: '
+                    f'<code>%cadence_clone_lesson "{name}" --as "{name} — &lt;date&gt;"</code>. '
+                    f'New join code, new session pool, checkpoints copied across.<br>'
+                    f'· You want to wipe all the prior student data and start over: '
+                    f'<code>%cadence_delete_lesson "{name}" --yes</code>, then re-run.<br>'
+                    f'· You truly want two lessons with the exact same name: re-run with '
+                    f'<code>--force</code>.<br>'
+                    f'<em style="color: #555; font-size: 0.85em;">Note: a "session" is a '
+                    f'single student\'s join. The system creates them automatically on every '
+                    f'<code>%cadence_session</code> call — you never have to "make" one.</em>'
+                    f'</div>'
+                ))
+                _progress.set_teacher(
+                    teacher_token=resp["teacher_token"],
+                    lesson_id=resp["id"],
+                    lesson_name=resp["name"],
+                    join_code=resp["join_code"],
+                    api=self.api,
+                )
+                return self._render_lesson_card(resp, created=False)
+            # Stale cache (server doesn't know the token anymore); fall through
+            # and create fresh — quieter than asking the user to "forget" it.
 
         join_code = args.code or lesson_store.generate_join_code()
         try:
@@ -384,8 +721,8 @@ class CadenceMagic(Magics):
             resp = self.api.get_lesson_by_token(cached["teacher_token"])
         except Exception as e:
             return display(HTML(
-                f'<div style="color: red;">❌ Could not reach lesson on server: {e}.<br>'
-                'If you recreated the backend database, remove the stale entry with '
+                f'<div style="color: red;">❌ Could not find lesson <code>{name}</code>: {e}.<br>'
+                'If the lesson has been deleted, remove the local entry with '
                 f'<code>cadence-cli lessons forget "{name}"</code> and create the lesson again.</div>'
             ))
 
@@ -399,6 +736,43 @@ class CadenceMagic(Magics):
         self._render_lesson_card(resp, created=False)
 
     # ------------------------------------------------------------------
+    # Teacher: project the join code for the class
+    # ------------------------------------------------------------------
+
+    @line_magic
+    def cadence_show_join(self, line):
+        """Display the active lesson or course's join code in big text.
+
+        Useful when projecting in a classroom — run this and screen-share the
+        cell output. Uses the active lesson if there is one, otherwise the
+        active course.
+        """
+        teacher = _progress.current_teacher() or _progress.current_course_teacher()
+        if not teacher:
+            return display(HTML(
+                '<div style="color: red;">❌ No active lesson or course. Run '
+                '<code>%cadence_create_lesson</code>, <code>%cadence_lesson</code>, '
+                '<code>%cadence_create_course</code>, or <code>%cadence_course</code> first.</div>'
+            ))
+        code = teacher["join_code"]
+        name = teacher.get("lesson_name") or teacher.get("course_name") or ""
+        display(HTML(f'''
+            <div style="background: white; padding: 48px 24px; margin: 16px 0;
+                        border: 2px solid #1976d2; border-radius: 12px; text-align: center;">
+                <div style="color: #1976d2; font-size: 1.1em; margin-bottom: 20px; opacity: 0.8;">
+                    Join code for <strong>{name}</strong>
+                </div>
+                <div style="font-family: 'JetBrains Mono', 'Menlo', monospace;
+                            font-size: 4.5em; font-weight: 700; letter-spacing: 0.04em;
+                            color: #0d47a1; line-height: 1.1;">{code}</div>
+                <div style="color: #666; margin-top: 28px; font-size: 0.95em;">
+                    Run in a notebook: <code style="background: #f0f0f0; padding: 2px 6px;
+                    border-radius: 3px;">%cadence_session {code} "your-name"</code>
+                </div>
+            </div>
+        '''))
+
+    # ------------------------------------------------------------------
     # Teacher: create / activate course, add notebooks
     # ------------------------------------------------------------------
 
@@ -410,21 +784,30 @@ class CadenceMagic(Magics):
     def _render_course_card(self, course: dict, created: bool) -> None:
         title = "Course created" if created else "Course loaded"
         dash = self._course_dashboard_url(course["teacher_token"])
+        join_code = course["join_code"]
+        teacher_token = course["teacher_token"]
         display(HTML(f'''
             <div style="border: 1px solid #7b1fa2; border-radius: 6px;
                         padding: 12px; margin: 8px 0; background: #faf5ff;">
                 <div style="font-weight: 600; color: #7b1fa2;">📚 {title}: {course["name"]}</div>
-                <div style="margin-top: 6px;">
+                <div style="margin-top: 8px;">
                     Share this course join code with students:
-                    <code style="font-size: 1.1em; background: white; padding: 2px 6px; border-radius: 3px;">
-                        {course["join_code"]}
-                    </code>
+                    <code style="font-size: 1.1em; background: white; padding: 2px 6px; border-radius: 3px;">{join_code}</code>
+                    {self._copy_button(join_code)}
                 </div>
-                <div style="margin-top: 6px;">
+                <div style="margin-top: 8px;">
                     🔗 <a href="{dash}" target="_blank">Open course dashboard</a>
+                    {self._copy_button(dash, "Copy URL")}
+                    <em style="color: #666; margin-left: 6px;">(saved to your library automatically — the dashboard has a <strong>Display join code</strong> button for projecting in class)</em>
                 </div>
-                <div style="margin-top: 4px; font-size: 0.85em; color: #666;">
-                    Use <code>%cadence_add_notebook "&lt;name&gt;"</code> to add notebooks to this course.
+                <div style="margin-top: 8px;">
+                    <span style="color: #555;">Teacher token (keep secret):</span>
+                    <code style="font-size: 0.85em; background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
+                    {self._copy_button(teacher_token, "Copy token")}
+                </div>
+                <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
+                    <code>%cadence_add_notebook "&lt;name&gt;"</code> to add a notebook ·
+                    <code>%cadence_delete_course "{course["name"]}"</code> to wipe.
                 </div>
             </div>
         '''))
@@ -432,19 +815,109 @@ class CadenceMagic(Magics):
     @magic_arguments()
     @argument('name', help='Course name', nargs='+')
     @argument('--code', default=None, help='Override the auto-generated join code')
+    @argument('--retention-days', type=int, default=None,
+              help='Per-session retention in days (1–365). Default 90.')
+    @argument('--yes-long-retention', action='store_true',
+              help='Skip the soft warning for retention > 180 days.')
+    @argument('--force', action='store_true',
+              help='Create a second course even if one with this name is already cached.')
     @line_magic
     def cadence_create_course(self, line):
-        """Create a course (grouping of notebooks) and persist credentials."""
+        """Create a course (grouping of notebooks) and persist credentials.
+
+        Courses are owned by a teacher account, so this requires
+        `%cadence_login` first. (Quick lessons via `%cadence_create_lesson`
+        do not require login.)
+
+        Re-runs are safe: if a course with this name is already cached, we
+        load it instead of creating a duplicate. Pass --force to create a
+        fresh second course with the same name.
+        """
         if not self._require_api():
+            return
+        if not creds_store.get_jwt():
+            return display(HTML(
+                '<div style="border: 1px solid #b45309; border-radius: 6px;'
+                ' padding: 10px; margin: 8px 0; background: #fffbeb;">'
+                '<strong style="color: #b45309;">🔒 Sign in required</strong><br>'
+                'Courses are tied to a teacher account so we can authorize student'
+                ' rights requests against a named controller. Run'
+                ' <code>%cadence_login</code> first, then re-run this command.<br>'
+                '<span style="font-size: 0.85em; color: #555;">Quick one-off lessons'
+                ' (<code>%cadence_create_lesson</code>) do not require an account.</span>'
+                '</div>'
+            ))
+        # Refresh the API client's Authorization header in case the token was
+        # set via the web (paste-flow) and the kernel was already alive.
+        self.api._refresh_auth_from_store()
+        if not self._check_attestation_or_prompt():
             return
         args = parse_argstring(self.cadence_create_course, line)
         name = ' '.join(args.name).strip().strip('"').strip("'")
         if not name:
             return display(HTML('<div style="color: red;">❌ Provide a course name</div>'))
 
+        # Rerun protection: if this kernel already has a course cached under
+        # the same name, reload it instead of creating a duplicate.
+        cached = lesson_store.get_course(name)
+        if cached and cached.get("teacher_token") and not args.force:
+            try:
+                resp = self.api.get_course_by_token(cached["teacher_token"])
+            except Exception:
+                resp = None
+            if resp:
+                display(HTML(
+                    f'<div style="background: #fffbeb; border-left: 3px solid #b45309; '
+                    f'padding: 8px 12px; margin-bottom: 8px; font-size: 0.9em;">'
+                    f'A course named <code>{name}</code> is already cached on this machine — '
+                    f'loaded it instead of creating a duplicate. The existing join code still '
+                    f'works; new students will each get their own enrollment.<br><br>'
+                    f'If that\'s not what you want:<br>'
+                    f'· To start over with a clean roster: '
+                    f'<code>%cadence_delete_course "{name}" --yes</code>, then re-run.<br>'
+                    f'· To force a duplicate with this exact same name: re-run with '
+                    f'<code>--force</code>.'
+                    f'</div>'
+                ))
+                _progress.set_course_teacher(
+                    teacher_token=resp["teacher_token"],
+                    course_id=resp["id"],
+                    course_name=resp["name"],
+                    join_code=resp["join_code"],
+                    api=self.api,
+                )
+                return self._render_course_card(resp, created=False)
+            # Stale cache; fall through and create.
+
+        retention = args.retention_days
+        if retention is not None and not (1 <= retention <= 365):
+            return display(HTML(
+                '<div style="color: red;">❌ <code>--retention-days</code> must be between 1 and 365.</div>'
+            ))
+        # Soft warning per the design doc: long retention (> 6 months) is a
+        # red flag without explicit confirmation.
+        if retention is not None and retention > 180 and not args.yes_long_retention:
+            return display(HTML(
+                f'<div style="border: 1px solid #b45309; border-radius: 6px;'
+                f' padding: 10px; margin: 8px 0; background: #fffbeb;">'
+                f'<strong style="color: #b45309;">⚠ Long retention</strong><br>'
+                f'You asked for <strong>{retention} days</strong> of per-session'
+                f' retention. Cohort-level aggregates are kept indefinitely already;'
+                f' individual per-student data this long increases breach impact'
+                f' without much teaching benefit after a few months.<br>'
+                f'If you really need it (e.g. multi-semester course, longitudinal'
+                f' study under institutional approval), re-run with'
+                f' <code>--yes-long-retention</code>.'
+                f'</div>'
+            ))
+
         join_code = args.code or lesson_store.generate_join_code()
         try:
-            resp = self.api.create_course(name=name, join_code=join_code)
+            resp = self.api.create_course(
+                name=name,
+                join_code=join_code,
+                session_retention_days=retention,
+            )
         except Exception as e:
             return display(HTML(f'<div style="color: red;">❌ Could not create course: {e}</div>'))
 
@@ -548,6 +1021,306 @@ class CadenceMagic(Magics):
         )
         self._render_lesson_card(lesson, created=True)
 
+    @magic_arguments()
+    @argument('lesson_name', help='Name of the lesson to attach (must exist in ~/.cadence/lessons.yaml)', nargs='+')
+    @argument('--to', dest='course_name', required=True,
+              help='Course name to attach the lesson to (must already exist).')
+    @argument('--order', type=int, default=0, help='Order inside the course.')
+    @line_magic
+    def cadence_attach_lesson(self, line):
+        """Attach an existing lesson to a course as a notebook.
+
+        Use this when you've already created a standalone lesson and now want
+        it to be part of a course. The lesson keeps its join code and teacher
+        token; the only change is that the course's dashboard now shows it as
+        one of the course notebooks. Use `%cadence_add_notebook` if you want
+        to create a fresh lesson in one step.
+
+        Usage:
+            %cadence_attach_lesson "My Lesson" --to "Fall 2026"
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_attach_lesson, line)
+        lesson_name = ' '.join(args.lesson_name).strip().strip('"').strip("'")
+        course_name = args.course_name.strip().strip('"').strip("'")
+
+        lesson_cache = lesson_store.get(lesson_name)
+        if not lesson_cache or not lesson_cache.get("teacher_token"):
+            return display(HTML(
+                f'<div style="color: red;">❌ No lesson named <code>{lesson_name}</code> in '
+                '<code>~/.cadence/lessons.yaml</code>. Did you typo, or is the lesson on '
+                'another machine? You can <code>%cadence_lesson "name"</code> first to load it.</div>'
+            ))
+        course_cache = lesson_store.get_course(course_name)
+        if not course_cache or not course_cache.get("teacher_token"):
+            return display(HTML(
+                f'<div style="color: red;">❌ No course named <code>{course_name}</code> in '
+                '<code>~/.cadence/lessons.yaml</code>. Did you typo, or is the course on '
+                'another machine? You can <code>%cadence_course "name"</code> first to load it.</div>'
+            ))
+
+        try:
+            self.api.add_notebook_to_course(
+                course_teacher_token=course_cache["teacher_token"],
+                lesson_teacher_token=lesson_cache["teacher_token"],
+                order_index=args.order,
+            )
+        except Exception as e:
+            return display(HTML(f'<div style="color: red;">❌ Attach failed: {e}</div>'))
+
+        # Update the local cache to record the course association.
+        lesson_store.put(
+            lesson_name,
+            lesson_id=lesson_cache.get("lesson_id"),
+            join_code=lesson_cache.get("join_code"),
+            teacher_token=lesson_cache.get("teacher_token"),
+            api_url=lesson_cache.get("api_url", self.api.base_url),
+            course=course_name,
+        )
+
+        display(HTML(f'''
+            <div style="border: 1px solid #15803d; border-radius: 6px;
+                        padding: 10px; margin: 8px 0; background: #f0fdf4;">
+                <div style="font-weight: 600; color: #15803d;">
+                    🔗 Attached <code>{lesson_name}</code> to course <code>{course_name}</code>
+                </div>
+                <div style="margin-top: 6px; font-size: 0.85em; color: #555;">
+                    The course dashboard now shows it as one of the notebooks.
+                    Students who join via the course code can pick it with
+                    <code>%cadence_notebook "{lesson_name}"</code>.
+                </div>
+            </div>
+        '''))
+
+    @magic_arguments()
+    @argument('lesson_name', help='Lesson name', nargs='+')
+    @argument('--from', dest='course_name', required=True,
+              help='Course name to detach the lesson from.')
+    @line_magic
+    def cadence_detach_lesson(self, line):
+        """Remove a lesson from a course (does not delete either).
+
+        Pair with %cadence_attach_lesson to "move" a lesson between courses:
+            %cadence_detach_lesson "X" --from "Old Course"
+            %cadence_attach_lesson "X" --to "New Course"
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_detach_lesson, line)
+        lesson_name = ' '.join(args.lesson_name).strip().strip('"').strip("'")
+        course_name = args.course_name.strip().strip('"').strip("'")
+
+        lesson_cache = lesson_store.get(lesson_name)
+        if not lesson_cache or not lesson_cache.get("teacher_token"):
+            return display(HTML(
+                f'<div style="color: red;">❌ No lesson named <code>{lesson_name}</code> in '
+                '<code>~/.cadence/lessons.yaml</code>.</div>'
+            ))
+        course_cache = lesson_store.get_course(course_name)
+        if not course_cache or not course_cache.get("teacher_token"):
+            return display(HTML(
+                f'<div style="color: red;">❌ No course named <code>{course_name}</code> in '
+                '<code>~/.cadence/lessons.yaml</code>.</div>'
+            ))
+        try:
+            self.api.detach_notebook_from_course(
+                course_teacher_token=course_cache["teacher_token"],
+                lesson_teacher_token=lesson_cache["teacher_token"],
+            )
+        except Exception as e:
+            return display(HTML(f'<div style="color: red;">❌ Detach failed: {e}</div>'))
+        display(HTML(
+            f'<div style="color: #555;">🔗 Detached <code>{lesson_name}</code> from course '
+            f'<code>{course_name}</code>. The lesson itself is unchanged.</div>'
+        ))
+
+    @magic_arguments()
+    @argument('name', help='Lesson name', nargs='+')
+    @argument('--yes', action='store_true',
+              help='Skip the confirmation prompt. Required to actually delete.')
+    @line_magic
+    def cadence_delete_lesson(self, line):
+        """Wipe a lesson and ALL its student data (attempts, submissions, reveals).
+
+        Usage:
+            %cadence_delete_lesson "Lesson name"             # confirmation prompt
+            %cadence_delete_lesson "Lesson name" --yes       # actually delete
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_delete_lesson, line)
+        name = ' '.join(args.name).strip().strip('"').strip("'")
+        cached = lesson_store.get(name)
+        if not cached or not cached.get("teacher_token"):
+            return display(HTML(
+                f'<div style="color: red;">❌ No lesson named <code>{name}</code> in '
+                '<code>~/.cadence/lessons.yaml</code>.</div>'
+            ))
+        if not args.yes:
+            return display(HTML(
+                f'<div style="border: 1px solid #b91c1c; border-radius: 6px;'
+                f' padding: 10px; margin: 8px 0; background: #fef2f2;">'
+                f'<strong style="color: #b91c1c;">⚠ Confirm deletion</strong><br>'
+                f'This wipes <code>{name}</code> AND every student session, attempt, code'
+                f' submission, and solution reveal attached to it. <strong>Cannot be undone.</strong><br>'
+                f'Re-run as <code>%cadence_delete_lesson "{name}" --yes</code> to proceed.'
+                f'</div>'
+            ))
+        try:
+            self.api.delete_lesson(cached["teacher_token"])
+        except Exception as e:
+            return display(HTML(f'<div style="color: red;">❌ Deletion failed: {e}</div>'))
+        lesson_store.remove(name)
+        display(HTML(
+            f'<div style="color: #15803d;">✅ Lesson <code>{name}</code> deleted.</div>'
+        ))
+
+    @magic_arguments()
+    @argument('name', help='Course name', nargs='+')
+    @argument('--yes', action='store_true',
+              help='Skip the confirmation prompt. Required to actually delete.')
+    @line_magic
+    def cadence_delete_course(self, line):
+        """Wipe a course and the student sessions joined directly to it.
+        Attached lessons are detached but NOT deleted — they remain available
+        standalone. To wipe a lesson, use %cadence_delete_lesson separately.
+
+        Usage:
+            %cadence_delete_course "Course name"             # confirmation prompt
+            %cadence_delete_course "Course name" --yes       # actually delete
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_delete_course, line)
+        name = ' '.join(args.name).strip().strip('"').strip("'")
+        cached = lesson_store.get_course(name)
+        if not cached or not cached.get("teacher_token"):
+            return display(HTML(
+                f'<div style="color: red;">❌ No course named <code>{name}</code> in '
+                '<code>~/.cadence/lessons.yaml</code>.</div>'
+            ))
+        if not args.yes:
+            return display(HTML(
+                f'<div style="border: 1px solid #b91c1c; border-radius: 6px;'
+                f' padding: 10px; margin: 8px 0; background: #fef2f2;">'
+                f'<strong style="color: #b91c1c;">⚠ Confirm deletion</strong><br>'
+                f'This wipes course <code>{name}</code> and every student enrollment +'
+                f' attempts joined via its code. <strong>Cannot be undone.</strong><br>'
+                f'Notebooks attached to the course are <em>detached</em> but not deleted —'
+                f' delete each one separately if you want those gone too.<br>'
+                f'Re-run as <code>%cadence_delete_course "{name}" --yes</code> to proceed.'
+                f'</div>'
+            ))
+        try:
+            self.api.delete_course(cached["teacher_token"])
+        except Exception as e:
+            return display(HTML(f'<div style="color: red;">❌ Deletion failed: {e}</div>'))
+        lesson_store.remove(name)
+        display(HTML(
+            f'<div style="color: #15803d;">✅ Course <code>{name}</code> deleted.</div>'
+        ))
+
+    @magic_arguments()
+    @argument('name', help='Name of the lesson to clone', nargs='+')
+    @argument('--as', dest='new_name', default=None,
+              help='Name for the clone (default: "<original> (copy)").')
+    @line_magic
+    def cadence_clone_lesson(self, line):
+        """Duplicate a lesson with all its checkpoints. The clone gets a fresh
+        join_code and teacher_token; the original is unchanged.
+
+        Usage:
+            %cadence_clone_lesson "Fall 2026 Week 3"
+            %cadence_clone_lesson "Fall 2026 Week 3" --as "Spring 2027 Week 3"
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_clone_lesson, line)
+        source_name = ' '.join(args.name).strip().strip('"').strip("'")
+        cached = lesson_store.get(source_name)
+        if not cached or not cached.get("teacher_token"):
+            return display(HTML(
+                f'<div style="color: red;">❌ No lesson named <code>{source_name}</code> in '
+                '<code>~/.cadence/lessons.yaml</code>.</div>'
+            ))
+        new_name = (args.new_name or f"{source_name} (copy)").strip().strip('"').strip("'")
+        try:
+            resp = self.api.clone_lesson(cached["teacher_token"], new_name=new_name)
+        except Exception as e:
+            return display(HTML(f'<div style="color: red;">❌ Clone failed: {e}</div>'))
+
+        lesson_store.put(
+            resp["name"],
+            lesson_id=resp["id"],
+            join_code=resp["join_code"],
+            teacher_token=resp["teacher_token"],
+            api_url=self.api.base_url,
+        )
+        _progress.set_teacher(
+            teacher_token=resp["teacher_token"],
+            lesson_id=resp["id"],
+            lesson_name=resp["name"],
+            join_code=resp["join_code"],
+            api=self.api,
+        )
+        self._render_lesson_card(resp, created=True)
+
+    # ------------------------------------------------------------------
+    # Student: just-in-time privacy notice (GDPR Article 13)
+    # ------------------------------------------------------------------
+
+    def _privacy_url(self) -> str:
+        base = os.getenv("CADENCE_DASHBOARD_URL",
+                         os.getenv("CADENCE_WEB_URL", "https://cadence-dash.com"))
+        return f"{base.rstrip('/')}/privacy"
+
+    def _terms_url(self) -> str:
+        base = os.getenv("CADENCE_DASHBOARD_URL",
+                         os.getenv("CADENCE_WEB_URL", "https://cadence-dash.com"))
+        return f"{base.rstrip('/')}/terms"
+
+    def _render_join_notice(self, display_name: str) -> None:
+        """GDPR Article 13 just-in-time notice rendered before a student joins."""
+        privacy_url = self._privacy_url()
+        display(HTML(f'''
+            <div style="border: 1px solid #1976d2; border-radius: 6px;
+                        padding: 12px; margin: 8px 0; background: #f0f7ff;
+                        font-size: 0.95em;">
+                <div style="font-weight: 600; color: #1976d2; margin-bottom: 6px;">
+                    📋 Before you join: how Cadence handles your data
+                </div>
+                <div style="margin: 6px 0;">
+                    Cadence shows your real-time progress to your teacher so they
+                    can see how the class is doing and help where needed.
+                </div>
+                <div style="margin: 6px 0; padding: 6px 10px; background: #fffceb;
+                            border-left: 3px solid #b45309; font-size: 0.9em;">
+                    You can use a pseudonym (like <code>birb_42</code>) instead of
+                    your real name, and you can remove everything any time with
+                    <code>%cadence_delete_my_data</code>.
+                </div>
+                <ul style="margin: 6px 0; padding-left: 18px; line-height: 1.5;">
+                    <li><strong>Collected</strong>: display name
+                        (<code>{display_name}</code>), checkpoint progress,
+                        attempts, timing, and code you submit.</li>
+                    <li><strong>Who sees it</strong>: your teacher only.</li>
+                    <li><strong>How long</strong>: the period your teacher set
+                        for this session, then deleted.</li>
+                    <li><strong>Never</strong>: used to train models, shared with
+                        other teachers, sold, or used for ads.</li>
+                    <li><strong>Your rights</strong>: see, export, or delete your data
+                        with <code>%cadence_my_data</code>,
+                        <code>%cadence_export_my_data</code>,
+                        <code>%cadence_delete_my_data</code>.</li>
+                </ul>
+                <div style="font-size: 0.85em; color: #555; margin-top: 6px;">
+                    <a href="{privacy_url}" target="_blank">Full privacy notice</a>
+                    · Questions or complaints: <code>privacy@cadence-dash.com</code>
+                </div>
+            </div>
+        '''))
+
     # ------------------------------------------------------------------
     # Student: join a session
     # ------------------------------------------------------------------
@@ -576,6 +1349,9 @@ class CadenceMagic(Magics):
             ))
 
         join_code, display_name = parts[0], parts[1]
+
+        # Article 13 notice at the moment of collection, before the API call.
+        self._render_join_notice(display_name)
 
         # Try lesson first (cheaper, most common path); on 404 try course.
         try:
@@ -679,15 +1455,181 @@ class CadenceMagic(Magics):
         ))
 
     # ------------------------------------------------------------------
+    # Student: data rights (GDPR Articles 15, 17, 20)
+    # ------------------------------------------------------------------
+
+    def _require_active_session(self):
+        """Return the active session dict or render an error and return None."""
+        session = _progress.current_session()
+        if not session:
+            display(HTML(
+                '<div style="color: red;">❌ No active session. Run '
+                '<code>%cadence_session &lt;join_code&gt; "&lt;name&gt;"</code> first.</div>'
+            ))
+            return None
+        return session
+
+    @line_magic
+    def cadence_my_data(self, line):
+        """Show everything Cadence stores about your current session (Article 15)."""
+        if not self._require_api():
+            return
+        session = self._require_active_session()
+        if not session:
+            return
+        try:
+            data = self.api.get_my_data(session["session_id"])
+        except Exception as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Could not fetch your data: {e}</div>'
+            ))
+
+        sess = data.get("session", {})
+        attempts = data.get("attempts", [])
+        submissions = data.get("code_submissions", [])
+        reveals = data.get("solution_reveals", [])
+
+        attempt_rows = ''.join(
+            f'<tr><td><code>{a["checkpoint_id"]}</code></td>'
+            f'<td>{a["attempt_num"]}</td>'
+            f'<td>{"✅" if a["is_correct"] else "❌"}</td>'
+            f'<td style="font-size: 0.85em; color: #555;">{a["created_at"]}</td></tr>'
+            for a in attempts
+        ) or '<tr><td colspan="4"><em>none</em></td></tr>'
+
+        submission_rows = ''.join(
+            f'<tr><td><code>{s["checkpoint_id"]}</code></td>'
+            f'<td>{len((s["code"] or "").splitlines())} lines</td>'
+            f'<td>{"image attached" if s["has_image"] else "—"}</td>'
+            f'<td style="font-size: 0.85em; color: #555;">{s["submitted_at"]}</td></tr>'
+            for s in submissions
+        ) or '<tr><td colspan="4"><em>none</em></td></tr>'
+
+        display(HTML(f'''
+            <div style="border: 1px solid #1976d2; border-radius: 6px;
+                        padding: 12px; margin: 8px 0; background: #f8fbff;">
+                <div style="font-weight: 600; color: #1976d2;">
+                    📂 Your data in this session
+                </div>
+                <div style="margin: 6px 0; font-size: 0.9em; color: #444;">
+                    <strong>Display name:</strong> {sess.get("display_name", "?")}
+                    · <strong>Session started:</strong> {sess.get("started_at", "?")}
+                </div>
+                <div style="margin-top: 10px;"><strong>Attempts ({len(attempts)}):</strong></div>
+                <table style="width: 100%; font-size: 0.9em; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #ddd; text-align: left;">
+                        <th>checkpoint</th><th>#</th><th>correct</th><th>when</th>
+                    </tr>
+                    {attempt_rows}
+                </table>
+                <div style="margin-top: 10px;"><strong>Code submissions ({len(submissions)}):</strong></div>
+                <table style="width: 100%; font-size: 0.9em; border-collapse: collapse;">
+                    <tr style="border-bottom: 1px solid #ddd; text-align: left;">
+                        <th>checkpoint</th><th>code</th><th>extras</th><th>when</th>
+                    </tr>
+                    {submission_rows}
+                </table>
+                <div style="margin-top: 10px; font-size: 0.85em; color: #555;">
+                    Solution reveals: {len(reveals)}
+                    · Download with <code>%cadence_export_my_data</code>
+                    · Delete with <code>%cadence_delete_my_data</code>
+                </div>
+            </div>
+        '''))
+
+    @magic_arguments()
+    @argument('--path', default=None,
+              help='Output file path. Defaults to ./cadence-my-data-<timestamp>.json')
+    @line_magic
+    def cadence_export_my_data(self, line):
+        """Download your session data as JSON (Article 20, right of portability)."""
+        if not self._require_api():
+            return
+        session = self._require_active_session()
+        if not session:
+            return
+        args = parse_argstring(self.cadence_export_my_data, line)
+        try:
+            data = self.api.get_my_data(session["session_id"])
+        except Exception as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Could not export your data: {e}</div>'
+            ))
+
+        path = args.path or f"cadence-my-data-{int(time.time())}.json"
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        except OSError as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Could not write to <code>{path}</code>: {e}</div>'
+            ))
+        display(HTML(
+            f'<div style="color: green;">💾 Exported to <code>{path}</code>.'
+            f' Open it in any text editor or feed it to another tool.</div>'
+        ))
+
+    @magic_arguments()
+    @argument('--yes', action='store_true',
+              help='Skip the confirmation prompt. Required to actually delete.')
+    @line_magic
+    def cadence_delete_my_data(self, line):
+        """Delete everything Cadence stores about your current session (Article 17).
+
+        Wipes attempts, code submissions, solution reveals, and the session
+        record. Cannot be undone. Pass --yes to confirm.
+        """
+        if not self._require_api():
+            return
+        session = self._require_active_session()
+        if not session:
+            return
+        args = parse_argstring(self.cadence_delete_my_data, line)
+        if not args.yes:
+            return display(HTML(
+                '<div style="border: 1px solid #b91c1c; border-radius: 6px;'
+                ' padding: 10px; margin: 8px 0; background: #fef2f2;">'
+                '<strong style="color: #b91c1c;">⚠ Confirm deletion</strong><br>'
+                'This wipes your display name, every attempt, every code submission,'
+                ' and every solution reveal for this session. <strong>Cannot be undone.</strong><br>'
+                'Re-run as <code>%cadence_delete_my_data --yes</code> to proceed.'
+                '</div>'
+            ))
+        try:
+            self.api.delete_my_data(session["session_id"])
+        except Exception as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Deletion failed: {e}.'
+                f' If this persists, email <code>privacy@cadence-dash.com</code>.</div>'
+            ))
+        _progress.clear_session()
+        display(HTML(
+            '<div style="color: green;">✅ Your session data has been deleted.'
+            ' This kernel is no longer connected — run <code>%cadence_session</code>'
+            ' again if you want to rejoin.</div>'
+        ))
+
+    # ------------------------------------------------------------------
     # Teacher: register / self-test
     # ------------------------------------------------------------------
 
     @magic_arguments()
     @argument('checkpoint_id', help='Checkpoint identifier')
-    @argument('--comparator', default='exact', choices=['exact', 'numeric', 'set', 'regex'])
-    @argument('--expected', required=True, help='JSON-encoded expected value/config')
+    @argument('--comparator', default='exact', choices=['exact', 'numeric', 'set', 'regex', 'manual'])
+    @argument('--expected', default=None,
+              help='JSON-encoded expected value/config. Required for every comparator except `manual`.')
+    @argument('--allow-submissions', action='store_true',
+              help='Let students submit code via %%cadence_submit for the teacher to review.')
     @argument('--hint', default=None)
+    @argument('--hint-after-attempts', type=int, default=1,
+              help='Number of attempts after which students can request the hint (default 1).')
     @argument('--order', type=int, default=0)
+    @argument('--reveal-after', type=int, default=None,
+              help='Number of attempts after which students can request the solution.')
+    @argument('--solution-value', default=None,
+              help='Short canonical answer shown when the student requests the solution.')
+    @argument('--solution-code', default=None,
+              help='Fully worked code snippet shown when the student requests the solution.')
     @line_magic
     def cadence_register(self, line):
         """Register the expected answer for a checkpoint in the active lesson.
@@ -705,7 +1647,29 @@ class CadenceMagic(Magics):
             ))
 
         args = parse_argstring(self.cadence_register, line)
-        expected = _parse_expected(args.expected)
+
+        if args.comparator == 'manual':
+            if args.expected is not None:
+                return display(HTML(
+                    '<div style="color: red;">❌ <code>--comparator manual</code> takes no '
+                    '<code>--expected</code> — there\'s nothing to auto-check.</div>'
+                ))
+            expected = None
+        else:
+            if args.expected is None:
+                return display(HTML(
+                    f'<div style="color: red;">❌ <code>--expected</code> is required for '
+                    f'<code>--comparator {args.comparator}</code>.</div>'
+                ))
+            expected = _parse_expected(args.expected)
+
+        if args.reveal_after is not None and not (args.solution_value or args.solution_code):
+            return display(HTML(
+                '<div style="color: red;">❌ <code>--reveal-after</code> needs at least one '
+                'of <code>--solution-value</code> or <code>--solution-code</code> set.</div>'
+            ))
+
+        hint_after = max(1, int(args.hint_after_attempts or 1))
 
         try:
             self.api.register_checkpoint(
@@ -714,14 +1678,146 @@ class CadenceMagic(Magics):
                 comparator=args.comparator,
                 expected_payload=expected,
                 hint=args.hint,
+                hint_after_attempts=hint_after,
                 order_index=args.order,
+                reveal_after_attempts=args.reveal_after,
+                solution_value=args.solution_value,
+                solution_code=args.solution_code,
+                allow_submissions=args.allow_submissions,
             )
         except Exception as e:
             return display(HTML(f'<div style="color: red;">❌ Registration failed: {e}</div>'))
 
+        extras = []
+        if args.hint:
+            extras.append(f"hint revealable after {hint_after} attempt{'s' if hint_after != 1 else ''}")
+        if args.reveal_after is not None:
+            kinds = []
+            if args.solution_value: kinds.append('value')
+            if args.solution_code: kinds.append('code')
+            extras.append(f"solution ({'+'.join(kinds)}) revealable after {args.reveal_after} attempts")
+        if args.allow_submissions:
+            extras.append("accepts %%cadence_submit code")
+        suffix = f' — {", ".join(extras)}' if extras else ''
         display(HTML(
             f'<div style="color: green;">✅ Checkpoint '
-            f'<code>{args.checkpoint_id}</code> registered ({args.comparator}).</div>'
+            f'<code>{args.checkpoint_id}</code> registered ({args.comparator}){suffix}.</div>'
+        ))
+
+    @cell_magic
+    def cadence_register_yaml(self, line, cell):
+        """Register many checkpoints at once from a YAML body.
+
+        Usage:
+            %%cadence_register_yaml
+            - id: setup.mean-value
+              comparator: numeric
+              expected: {value: 49.5, tolerance: 0.001}
+              hint: average of 0..99
+              order: 1
+            - id: discovery.higgs-peak
+              comparator: exact
+              expected: 125
+              reveal_after: 3
+              solution_value: '125'
+              solution_code: |
+                bin_edges = np.arange(100, 151)
+                counts, _ = np.histogram(m_gg, bins=bin_edges)
+                int(bin_edges[np.argmax(counts)])
+              allow_submissions: true
+            - id: discovery.reflect
+              comparator: manual
+              hint: Describe the peak shape.
+
+        Field names mirror the `%cadence_register` flags (snake_case).
+        """
+        if not self._require_api():
+            return
+        teacher = _progress.current_teacher()
+        if not teacher:
+            return display(HTML(
+                '<div style="color: red;">❌ No active lesson. Run '
+                '<code>%cadence_create_lesson "My Lesson"</code> or '
+                '<code>%cadence_lesson "My Lesson"</code> first.</div>'
+            ))
+
+        try:
+            import yaml  # PyYAML is already a Cadence dependency
+        except ImportError:
+            return display(HTML(
+                '<div style="color: red;">❌ PyYAML not installed. <code>pip install pyyaml</code>.</div>'
+            ))
+
+        try:
+            entries = yaml.safe_load(cell) or []
+        except yaml.YAMLError as e:
+            return display(HTML(f'<div style="color: red;">❌ YAML parse error: {e}</div>'))
+
+        if not isinstance(entries, list):
+            return display(HTML(
+                '<div style="color: red;">❌ Expected a top-level list of checkpoints. '
+                'Each entry is a mapping with at least <code>id</code> and <code>comparator</code>.</div>'
+            ))
+
+        ok: list = []
+        failed: list = []
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                failed.append((i, "entry is not a mapping"))
+                continue
+            cp_id = entry.get('id') or entry.get('checkpoint_id')
+            comparator = entry.get('comparator', 'exact')
+            if not cp_id:
+                failed.append((i, "missing required field 'id'"))
+                continue
+            if comparator not in {'exact', 'numeric', 'set', 'regex', 'manual'}:
+                failed.append((cp_id, f"unknown comparator {comparator!r}"))
+                continue
+
+            expected = entry.get('expected')
+            if comparator == 'manual':
+                if expected is not None:
+                    failed.append((cp_id, "manual comparator takes no `expected`"))
+                    continue
+                expected_payload = None
+            else:
+                if expected is None:
+                    failed.append((cp_id, f"`expected` is required for comparator={comparator}"))
+                    continue
+                expected_payload = expected if isinstance(expected, dict) else {"value": expected}
+
+            hint_after = entry.get('hint_after', entry.get('hint_after_attempts', 1))
+            try:
+                hint_after = max(1, int(hint_after))
+            except (TypeError, ValueError):
+                hint_after = 1
+            try:
+                self.api.register_checkpoint(
+                    teacher_token=teacher["teacher_token"],
+                    checkpoint_id=cp_id,
+                    comparator=comparator,
+                    expected_payload=expected_payload,
+                    hint=entry.get('hint'),
+                    hint_after_attempts=hint_after,
+                    order_index=entry.get('order', entry.get('order_index', 0)),
+                    reveal_after_attempts=entry.get('reveal_after', entry.get('reveal_after_attempts')),
+                    solution_value=entry.get('solution_value'),
+                    solution_code=entry.get('solution_code'),
+                    allow_submissions=bool(entry.get('allow_submissions', False)),
+                )
+                ok.append(cp_id)
+            except Exception as e:
+                failed.append((cp_id, str(e)))
+
+        rows = ''.join(f'<li>✅ <code>{cp}</code></li>' for cp in ok)
+        if failed:
+            rows += ''.join(
+                f'<li>❌ <code>{cp}</code> — <em>{reason}</em></li>' for cp, reason in failed
+            )
+        display(HTML(
+            f'<div>Bulk register: <strong>{len(ok)} registered</strong>'
+            f'{f", <strong style=\"color: #b91c1c;\">{len(failed)} failed</strong>" if failed else ""}.'
+            f'<ul style="margin: 6px 0 0 0; padding-left: 18px;">{rows}</ul></div>'
         ))
 
     @line_magic
@@ -890,6 +1986,29 @@ class CadenceMagic(Magics):
     # Student: timed cell check
     # ------------------------------------------------------------------
 
+    def _eval_cell_last_expr(self, cell: str):
+        """Exec the cell's statements in the user namespace; return the value
+        of the last expression (or None if the cell doesn't end in one).
+
+        Bypasses self.shell.run_cell(silent=True) — that sets ast_node
+        interactivity to "none" and drops the trailing-expression value,
+        which is exactly what we need. Imports and defs still persist into
+        the user namespace because we exec in self.shell.user_ns."""
+        import ast as _ast
+        tree = _ast.parse(cell)
+        if not tree.body:
+            return None
+        ns = self.shell.user_ns
+        last = tree.body[-1]
+        if len(tree.body) > 1:
+            body_module = _ast.Module(body=tree.body[:-1], type_ignores=[])
+            exec(compile(body_module, "<cadence_time>", "exec"), ns)
+        if isinstance(last, _ast.Expr):
+            return eval(compile(_ast.Expression(body=last.value), "<cadence_time>", "eval"), ns)
+        last_module = _ast.Module(body=[last], type_ignores=[])
+        exec(compile(last_module, "<cadence_time>", "exec"), ns)
+        return None
+
     @cell_magic
     def cadence_time(self, line, cell):
         """Run a cell, time it, then submit the last expression as the answer.
@@ -917,19 +2036,18 @@ class CadenceMagic(Magics):
         checkpoint_id = parts[0]
 
         start = time.perf_counter()
-        result = self.shell.run_cell(cell, store_history=False, silent=True)
-        elapsed_ms = int((time.perf_counter() - start) * 1000)
-
-        if not result.success:
+        try:
+            value = self._eval_cell_last_expr(cell)
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
             display(HTML(
                 f'<div style="color: red;">❌ Cell raised an error '
                 f'after {elapsed_ms} ms — not submitted.</div>'
             ))
-            if result.error_in_exec:
-                raise result.error_in_exec
-            return
+            raise exc
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
 
-        if result.result is None:
+        if value is None:
             return display(HTML(
                 '<div style="color: orange;">⚠️ Cell returned no value. '
                 'End it with an expression whose value is your answer '
@@ -940,7 +2058,7 @@ class CadenceMagic(Magics):
             resp = session["api"].check_answer(
                 session["session_id"],
                 checkpoint_id,
-                result.result,
+                value,
                 elapsed_ms=elapsed_ms,
             )
         except Exception as e:
@@ -951,10 +2069,65 @@ class CadenceMagic(Magics):
         verdict = _progress.CheckResult(
             is_correct=bool(resp.get("is_correct")),
             attempt_num=int(resp.get("attempt_num", 0)),
-            hint=resp.get("hint"),
             elapsed_ms=resp.get("elapsed_ms", elapsed_ms),
+            is_manual=bool(resp.get("is_manual")),
+            hint_available=bool(resp.get("hint_available")),
+            solution_available=bool(resp.get("solution_available")),
+            checkpoint_id=checkpoint_id,
         )
         display(verdict)
+
+    @cell_magic
+    def cadence_submit(self, line, cell):
+        """Execute the cell normally AND submit its source as a code submission.
+
+        Usage:
+            %%cadence_submit <checkpoint_id>
+            # ... student code ...
+
+        Only works when the teacher registered the checkpoint with
+        `--allow-submissions`. The cell runs first so the student still sees
+        their output; the source is then sent to the teacher's dashboard.
+        """
+        if not self._require_api():
+            return
+        session = _progress.current_session()
+        if not session:
+            return display(HTML(
+                '<div style="color: red;">❌ No active session. Run '
+                '<code>%cadence_session &lt;join_code&gt; "&lt;name&gt;"</code> first.</div>'
+            ))
+
+        parts = line.strip().split()
+        if not parts:
+            return display(HTML(
+                '<div style="color: red;">❌ Usage: '
+                '<code>%%cadence_submit &lt;checkpoint_id&gt;</code></div>'
+            ))
+        checkpoint_id = parts[0]
+
+        # Run the cell so the student sees the normal output, then submit.
+        result = self.shell.run_cell(cell, store_history=True, silent=False)
+        if not result.success:
+            display(HTML(
+                '<div style="color: red;">❌ Cell raised an error — '
+                'not submitted. Fix the code and re-run.</div>'
+            ))
+            if result.error_in_exec:
+                raise result.error_in_exec
+            return
+
+        try:
+            session["api"].submit_code(session["session_id"], checkpoint_id, cell)
+        except Exception as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Submission failed: {e}</div>'
+            ))
+
+        display(HTML(
+            f'<div style="color: #6b21a8;">📤 Code submitted to '
+            f'<code>{checkpoint_id}</code>. The teacher can see it on the dashboard.</div>'
+        ))
 
 
 # IPython extension entry points live in extension.py — that's what

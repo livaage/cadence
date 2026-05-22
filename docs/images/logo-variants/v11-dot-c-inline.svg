@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- Variant 11: the "C" in "Cadence" rebuilt out of overlapping coloured dots
+       in a 270° arc, sized like a calligraphic stroke (small tips, fat middle).
+       The rest of the wordmark continues in plain Inter Bold. -->
+  <!-- Top-right tip -->
+  <circle cx="16.5" cy="32.94" r="3.5" fill="#4338ca"/>
+  <!-- Top-left -->
+  <circle cx="9.5"  cy="32.94" r="5"   fill="#7c3aed"/>
+  <!-- Left (biggest — middle of the arc) -->
+  <circle cx="6"    cy="39"    r="6"   fill="#e11d48"/>
+  <!-- Bottom-left -->
+  <circle cx="9.5"  cy="45.06" r="5"   fill="#f59e0b"/>
+  <!-- Bottom-right tip -->
+  <circle cx="16.5" cy="45.06" r="3.5" fill="#0d9488"/>
+
+  <!-- "adence" picks up after the dot-C -->
+  <text x="22" y="52" font-family="Inter, system-ui, sans-serif" font-size="36" font-weight="700" fill="#0f172a" letter-spacing="-0.5">adence</text>
+</svg>

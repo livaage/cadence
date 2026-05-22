@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover
 
 CONFIG_DIR = Path(os.getenv("CADENCE_CONFIG_DIR", str(Path.home() / ".cadence")))
 LESSONS_FILE = CONFIG_DIR / "lessons.yaml"
+TERMS_FILE = CONFIG_DIR / "terms.yaml"
 
 
 def _ensure_dir() -> None:
@@ -106,6 +107,45 @@ def list_by_kind(kind: str) -> list:
         name for name, entry in _load().items()
         if entry.get("kind", "lesson") == kind
     ]
+
+
+# ----------------------------------------------------------------------------
+# Teacher attestations (age / school authority)
+# ----------------------------------------------------------------------------
+
+# Bump this when the attestation wording changes; teachers will be re-prompted.
+ATTESTATION_VERSION = "v1"
+
+
+def _load_terms() -> Dict[str, Any]:
+    if not TERMS_FILE.exists() or yaml is None:
+        return {}
+    try:
+        with TERMS_FILE.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def is_attested(kind: str = "age_school_authority", version: str = ATTESTATION_VERSION) -> bool:
+    entry = _load_terms().get(kind)
+    return bool(entry) and entry.get("version") == version
+
+
+def record_attestation(kind: str = "age_school_authority", version: str = ATTESTATION_VERSION) -> None:
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to record attestations")
+    _ensure_dir()
+    store = _load_terms()
+    from datetime import datetime
+    store[kind] = {"version": version, "accepted_at": datetime.utcnow().isoformat()}
+    with TERMS_FILE.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(store, f, sort_keys=False)
+    try:
+        os.chmod(TERMS_FILE, 0o600)
+    except OSError:
+        pass
 
 
 # ----------------------------------------------------------------------------

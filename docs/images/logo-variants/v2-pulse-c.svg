@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- Variant 2: Outlined "C" with a heartbeat pulse through the opening -->
+  <g transform="translate(10, 12)">
+    <!-- The C arc: open to the right -->
+    <path d="M 50 8 A 28 28 0 1 0 50 56"
+          fill="none"
+          stroke="#4338ca"
+          stroke-width="8"
+          stroke-linecap="round"/>
+    <!-- Pulse line crossing through the opening -->
+    <path d="M 6 32 L 24 32 L 30 18 L 36 46 L 42 26 L 52 32"
+          fill="none"
+          stroke="#4338ca"
+          stroke-width="3"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          opacity="0.85"/>
+  </g>
+  <text x="78" y="52" font-family="Inter, system-ui, sans-serif" font-size="36" font-weight="700" fill="#0f172a" letter-spacing="-0.5">Cadence</text>
+</svg>

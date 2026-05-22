@@ -62,26 +62,30 @@ class CadenceAPI:
         self.student_email = student_email or os.getenv("CADENCE_STUDENT_EMAIL")
         self.timeout = timeout
         self.session = requests.Session()
-        
+
         # Add default headers
         self.session.headers.update({
             "Content-Type": "application/json",
             "User-Agent": f"cadence-jupyter/{__import__('cadence').__version__}"
         })
+
+        # Pick up a stored teacher JWT if there is one. Magic commands that
+        # need authenticated endpoints (e.g. /courses/mine) rely on this.
+        self._refresh_auth_from_store()
         
         # Validation hooks
         self.validation_hooks = []
         
     def _make_request(
-        self, 
-        method: str, 
-        endpoint: str, 
+        self,
+        method: str,
+        endpoint: str,
         data: Optional[Dict] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Make an HTTP request to the API"""
         url = f"{self.base_url}{endpoint}"
-        
+
         try:
             response = self.session.request(
                 method=method,
@@ -93,7 +97,14 @@ class CadenceAPI:
             response.raise_for_status()
             return response.json()
         except RequestException as e:
-            logger.error(f"API request failed: {e}")
+            # 404s are routinely used to probe ("is this code a lesson or a
+            # course?") — don't shout in the notebook output. Higher-level
+            # code re-raises if it actually wants to fail.
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 404:
+                logger.debug(f"API request returned 404: {endpoint}")
+            else:
+                logger.error(f"API request failed: {e}")
             raise
     
     def status(self) -> Dict[str, Any]:
@@ -305,9 +316,14 @@ class CadenceAPI:
         teacher_token: str,
         checkpoint_id: str,
         comparator: str,
-        expected_payload: Dict[str, Any],
+        expected_payload: Optional[Dict[str, Any]],
         hint: Optional[str] = None,
+        hint_after_attempts: int = 1,
         order_index: int = 0,
+        reveal_after_attempts: Optional[int] = None,
+        solution_value: Optional[str] = None,
+        solution_code: Optional[str] = None,
+        allow_submissions: bool = False,
     ) -> Dict[str, Any]:
         return self._make_request(
             "POST",
@@ -315,11 +331,50 @@ class CadenceAPI:
             {
                 "checkpoint_id": checkpoint_id,
                 "comparator": comparator,
-                "expected_payload": json.dumps(expected_payload),
+                # None for manual; JSON-encoded payload otherwise.
+                "expected_payload": json.dumps(expected_payload) if expected_payload is not None else None,
                 "hint": hint,
+                "hint_after_attempts": hint_after_attempts,
                 "order_index": order_index,
+                "reveal_after_attempts": reveal_after_attempts,
+                "solution_value": solution_value,
+                "solution_code": solution_code,
+                "allow_submissions": allow_submissions,
             },
         )
+
+    def get_hint(self, session_id: str, checkpoint_id: str) -> Dict[str, Any]:
+        return self._make_request(
+            "GET",
+            f"/sessions/{session_id}/checkpoints/{checkpoint_id}/hint",
+        )
+
+    def get_solution(self, session_id: str, checkpoint_id: str) -> Dict[str, Any]:
+        return self._make_request(
+            "GET",
+            f"/sessions/{session_id}/checkpoints/{checkpoint_id}/solution",
+        )
+
+    def submit_code(
+        self,
+        session_id: str,
+        checkpoint_id: str,
+        code: Optional[str] = None,
+        language: str = "python",
+        image_data_b64: Optional[str] = None,
+        image_mime: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "session_id": session_id,
+            "checkpoint_id": checkpoint_id,
+            "language": language,
+        }
+        if code is not None:
+            body["code"] = code
+        if image_data_b64 is not None:
+            body["image_data_b64"] = image_data_b64
+            body["image_mime"] = image_mime or "image/png"
+        return self._make_request("POST", f"/sessions/{session_id}/submissions", body)
 
     def list_checkpoints(self, teacher_token: str) -> List[Dict[str, Any]]:
         return self._make_request("GET", f"/lessons/by-token/{teacher_token}/checkpoints")
@@ -340,12 +395,15 @@ class CadenceAPI:
         name: str,
         join_code: Optional[str] = None,
         teacher_token: Optional[str] = None,
+        session_retention_days: Optional[int] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"name": name}
         if join_code:
             body["join_code"] = join_code
         if teacher_token:
             body["teacher_token"] = teacher_token
+        if session_retention_days is not None:
+            body["session_retention_days"] = session_retention_days
         return self._make_request("POST", "/courses", body)
 
     def get_course_by_token(self, teacher_token: str) -> Dict[str, Any]:
@@ -375,6 +433,46 @@ class CadenceAPI:
             "POST",
             f"/courses/by-token/{course_teacher_token}/notebooks",
             {"lesson_teacher_token": lesson_teacher_token, "order_index": order_index},
+        )
+
+    def detach_notebook_from_course(
+        self,
+        course_teacher_token: str,
+        lesson_teacher_token: str,
+    ) -> None:
+        url = f"{self.base_url}/courses/by-token/{course_teacher_token}/notebooks"
+        response = self.session.delete(
+            url,
+            params={"lesson_teacher_token": lesson_teacher_token},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+    def delete_lesson(self, teacher_token: str) -> None:
+        url = f"{self.base_url}/lessons/by-token/{teacher_token}"
+        response = self.session.delete(url, timeout=self.timeout)
+        if response.status_code != 404:
+            response.raise_for_status()
+
+    def delete_course(self, teacher_token: str) -> None:
+        url = f"{self.base_url}/courses/by-token/{teacher_token}"
+        response = self.session.delete(url, timeout=self.timeout)
+        if response.status_code != 404:
+            response.raise_for_status()
+
+    def clone_lesson(
+        self,
+        source_teacher_token: str,
+        new_name: Optional[str] = None,
+        new_join_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": new_name or ""}
+        if new_join_code:
+            body["join_code"] = new_join_code
+        return self._make_request(
+            "POST",
+            f"/lessons/by-token/{source_teacher_token}/clone",
+            body,
         )
 
     def list_course_notebooks(self, course_teacher_token: str) -> List[Dict[str, Any]]:
@@ -429,4 +527,63 @@ class CadenceAPI:
             "student_id": student_id,
             "score": score
         }
-        return self._make_request("POST", "/sync/grades", data) 
+        return self._make_request("POST", "/sync/grades", data)
+
+    # ------------------------------------------------------------------
+    # Teacher authentication (JWT)
+    # ------------------------------------------------------------------
+
+    def _refresh_auth_from_store(self) -> None:
+        """Set or clear the Authorization header from creds_store."""
+        from . import creds_store
+        jwt = creds_store.get_jwt()
+        if jwt:
+            self.session.headers["Authorization"] = f"Bearer {jwt}"
+        else:
+            self.session.headers.pop("Authorization", None)
+
+    def set_auth_token(self, jwt: str) -> None:
+        self.session.headers["Authorization"] = f"Bearer {jwt}"
+
+    def clear_auth_token(self) -> None:
+        self.session.headers.pop("Authorization", None)
+
+    def login(self, username: str, password: str) -> Dict[str, Any]:
+        """POST /auth/login — returns {access_token, token_type}."""
+        url = f"{self.base_url}/auth/login"
+        # FastAPI's OAuth2PasswordRequestForm wants form data, not JSON.
+        response = self.session.post(
+            url,
+            data={"username": username, "password": password},
+            timeout=self.timeout,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def signup(self, username: str, email: str, password: str) -> Dict[str, Any]:
+        return self._make_request("POST", "/auth/signup", {
+            "username": username, "email": email, "password": password,
+        })
+
+    def whoami(self) -> Dict[str, Any]:
+        return self._make_request("GET", "/auth/me")
+
+    def list_my_courses(self) -> List[Dict[str, Any]]:
+        return self._make_request("GET", "/courses/mine")
+
+    # ------------------------------------------------------------------
+    # Student rights (GDPR Articles 15, 17, 20)
+    # ------------------------------------------------------------------
+
+    def get_my_data(self, session_id: str) -> Dict[str, Any]:
+        """Right of access (Article 15) and portability (Article 20)."""
+        return self._make_request("GET", f"/sessions/{session_id}/my-data")
+
+    def delete_my_data(self, session_id: str) -> None:
+        """Right to erasure (Article 17). Wipes the session and everything
+        referencing it. Idempotent — a 404 means it's already gone."""
+        url = f"{self.base_url}/sessions/{session_id}"
+        response = self.session.delete(url, timeout=self.timeout)
+        if response.status_code != 404:
+            response.raise_for_status()

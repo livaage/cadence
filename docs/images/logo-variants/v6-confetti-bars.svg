@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- Variant 6: Wobbly multi-color bars with a sparkle — same data-shape as v1 but with personality -->
+  <g transform="translate(8, 14)">
+    <!-- Bar 1: indigo, slight left tilt -->
+    <rect x="0" y="34" width="12" height="18" rx="3" fill="#4338ca" transform="rotate(-4 6 43)"/>
+    <!-- Bar 2: amber, slight right tilt -->
+    <rect x="16" y="22" width="12" height="30" rx="3" fill="#f59e0b" transform="rotate(3 22 37)"/>
+    <!-- Bar 3: teal, taller, slight left tilt -->
+    <rect x="32" y="6" width="12" height="46" rx="3" fill="#0d9488" transform="rotate(-3 38 29)"/>
+    <!-- Sparkle / "tada" above the tallest -->
+    <g transform="translate(40, 0)" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" fill="none">
+      <line x1="0" y1="0" x2="0" y2="4"/>
+      <line x1="-3" y1="2" x2="3" y2="2"/>
+    </g>
+  </g>
+  <text x="64" y="52" font-family="Inter, system-ui, sans-serif" font-size="36" font-weight="700" fill="#0f172a" letter-spacing="-0.5">Cadence</text>
+</svg>

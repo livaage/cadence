@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <!-- Variant 4: Soft rhythm wave underneath the wordmark, no separate icon -->
+  <text x="0" y="50" font-family="Inter, system-ui, sans-serif" font-size="42" font-weight="700" fill="#0f172a" letter-spacing="-0.8">Cadence</text>
+  <!-- Heartbeat / rhythm line below the wordmark -->
+  <path d="M 4 68 L 60 68 L 70 56 L 80 80 L 90 60 L 100 68 L 200 68"
+        fill="none"
+        stroke="#4338ca"
+        stroke-width="2.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>

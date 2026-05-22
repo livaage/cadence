@@ -14,7 +14,7 @@ from .api import CadenceAPI
 from .notebook import ProblemNotebook, create_problem_notebook
 from .magic import CadenceMagic
 from .extension import CadenceExtension, load_ipython_extension
-from .progress import check, CheckResult, current_session
+from .progress import check, CheckResult, current_session, show_hint, show_solution, mark_done, submit_image
 
 __all__ = [
     "CadenceAPI",
@@ -25,5 +25,9 @@ __all__ = [
     "load_ipython_extension",
     "check",
     "CheckResult",
+    "show_hint",
+    "show_solution",
+    "mark_done",
+    "submit_image",
     "current_session",
 ]

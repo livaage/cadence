@@ -1,60 +1,64 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { TeacherProfile, whoami } from '../services/api';
 
-interface AuthContextType {
-  isAuthenticated: boolean;
-  token: string | null;
-  login: (token: string) => void;
-  logout: () => void;
+interface AuthState {
+  teacher: TeacherProfile | null;
+  loading: boolean;
+  signIn: (jwt: string) => Promise<void>;
+  signOut: () => void;
+  refresh: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AuthContext = createContext<AuthState | undefined>(undefined);
 
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
-}
+const TOKEN_KEY = 'token';
 
-interface AuthProviderProps {
-  children: ReactNode;
-}
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [teacher, setTeacher] = useState<TeacherProfile | null>(null);
+  const [loading, setLoading] = useState(true);
 
-export function AuthProvider({ children }: AuthProviderProps) {
-  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!token);
-
-  const login = (newToken: string) => {
-    setToken(newToken);
-    setIsAuthenticated(true);
-    localStorage.setItem('token', newToken);
-  };
-
-  const logout = () => {
-    setToken(null);
-    setIsAuthenticated(false);
-    localStorage.removeItem('token');
-  };
+  const refresh = useCallback(async () => {
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (!token) {
+      setTeacher(null);
+      setLoading(false);
+      return;
+    }
+    try {
+      const me = await whoami();
+      setTeacher(me);
+    } catch {
+      // Stored token is invalid or expired — wipe it.
+      localStorage.removeItem(TOKEN_KEY);
+      setTeacher(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (token) {
-      setIsAuthenticated(true);
-    } else {
-      setIsAuthenticated(false);
-    }
-  }, [token]);
+    refresh();
+  }, [refresh]);
 
-  const value = {
-    isAuthenticated,
-    token,
-    login,
-    logout,
-  };
+  const signIn = useCallback(async (jwt: string) => {
+    localStorage.setItem(TOKEN_KEY, jwt);
+    await refresh();
+  }, [refresh]);
+
+  const signOut = useCallback(() => {
+    localStorage.removeItem(TOKEN_KEY);
+    setTeacher(null);
+  }, []);
 
   return (
-    <AuthContext.Provider value={value}>
+    <AuthContext.Provider value={{ teacher, loading, signIn, signOut, refresh }}>
       {children}
     </AuthContext.Provider>
   );
-} 
+};
+
+export const useAuth = (): AuthState => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
+  return ctx;
+};
