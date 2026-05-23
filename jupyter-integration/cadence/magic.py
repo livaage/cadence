@@ -364,6 +364,29 @@ class CadenceMagic(Magics):
             creds_store.set_credentials(jwt, username=me.get("username"))
             return self._render_login_success(me)
 
+        web_url = os.getenv("CADENCE_DASHBOARD_URL",
+                            os.getenv("CADENCE_WEB_URL", "https://cadence-dash.com"))
+        display(HTML(f'''
+            <div style="border: 1px solid #3b82f6; border-radius: 6px;
+                        padding: 12px; margin: 8px 0; background: #eff6ff;
+                        font-size: 0.9em;">
+                <div style="font-weight: 600; color: #1e40af; margin-bottom: 6px;">
+                    Logging in to Cadence
+                </div>
+                <div style="margin-bottom: 8px;">
+                    <strong>Signed up with GitHub?</strong> You don't have a password.
+                    Interrupt this cell (■ stop button), then run:
+                    <pre style="background:#fff; padding:6px; border-radius:4px; margin:4px 0;">%cadence_login --token YOUR_JWT</pre>
+                    Get your JWT: sign in at <a href="{web_url}" target="_blank">{web_url}</a>,
+                    open browser DevTools → Console, and paste:
+                    <pre style="background:#fff; padding:6px; border-radius:4px; margin:4px 0;">localStorage.getItem('token')</pre>
+                </div>
+                <div>
+                    <strong>Have a username + password?</strong> Continue with the prompts below.
+                </div>
+            </div>
+        '''))
+
         username = args.username
         if not username:
             try:
@@ -387,7 +410,12 @@ class CadenceMagic(Magics):
             resp = self.api.login(username, password)
         except Exception as e:
             return display(HTML(
-                f'<div style="color: red;">❌ Login failed: {e}</div>'
+                f'<div style="color: red;">❌ Login failed: {e}<br>'
+                f'<span style="font-size: 0.9em; color: #555;">'
+                f'If you signed up with GitHub, this account has no password. '
+                f'Use <code>%cadence_login --token YOUR_JWT</code> instead — '
+                f'see the banner above for how to grab the JWT.'
+                f'</span></div>'
             ))
         jwt = resp["access_token"]
         self.api.set_auth_token(jwt)
