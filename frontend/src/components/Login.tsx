@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link as RouterLink, useNavigate } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -17,11 +17,21 @@ import OAuthButtons from './OAuthButtons';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { signIn } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Where to land after success. Pages that send users here while logged out
+  // (e.g. /teacher/account?prompt=password from the Jupyter banner) pass
+  // ?next=<full-url> so the user round-trips back to the intended page.
+  // Only honor same-origin relative paths to avoid open-redirect tricks.
+  const nextParam = searchParams.get('next');
+  const next = nextParam && nextParam.startsWith('/') && !nextParam.startsWith('//')
+    ? nextParam
+    : '/teacher/library';
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,7 +40,7 @@ const Login: React.FC = () => {
     try {
       const { access_token } = await loginTeacher(username, password);
       await signIn(access_token);
-      navigate('/teacher/library');
+      navigate(next);
     } catch (err: any) {
       setError(formatApiError(err, 'Login failed. Check your username and password.'));
     } finally {
@@ -82,12 +92,21 @@ const Login: React.FC = () => {
             </Button>
           </Stack>
 
-          <Typography variant="body2" sx={{ mt: 3, textAlign: 'center' }}>
-            New here?{' '}
-            <Link component={RouterLink} to="/signup">
-              Create an account
-            </Link>
-          </Typography>
+          <Stack spacing={1} sx={{ mt: 3, textAlign: 'center' }}>
+            <Typography variant="body2">
+              New here?{' '}
+              <Link component={RouterLink} to="/signup">
+                Create an account
+              </Link>
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Forgot your password?{' '}
+              <Link href="mailto:contact@cadence-dash.com?subject=Password%20reset%20request">
+                Email us
+              </Link>{' '}
+              and we'll reset it for you.
+            </Typography>
+          </Stack>
         </CardContent>
       </Card>
     </Box>

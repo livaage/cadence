@@ -391,6 +391,9 @@ export interface LessonSummaryStats {
   solve_rate_pct: number;
   completion_histogram: Record<string, number>;
   top_wrong_overall: Array<{ checkpoint_id: string; value: string; count: number; student_names: string[] }>;
+  // checkpoint_id -> count of students whose current frontier is that checkpoint.
+  // Plus a synthetic "done" key for students who finished the last checkpoint.
+  frontier_histogram: Record<string, number>;
 }
 
 export interface NewActivitySummary {

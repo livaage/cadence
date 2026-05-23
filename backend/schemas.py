@@ -455,6 +455,14 @@ class LessonSummaryStats(BaseModel):
     solve_rate_pct: float  # total_solved_pairs / possible_pairs * 100
     completion_histogram: dict  # {"0": n, "1": n, ... "<total_checkpoints>": n}
     top_wrong_overall: List[dict]  # [{"checkpoint_id": "...", "value": "...", "count": N}]
+    # "Where students are" frontier — one bucket per checkpoint, count of students
+    # whose current working frontier is that checkpoint. A student's frontier is
+    # the checkpoint of their most-recent wrong attempt, OR if their most-recent
+    # attempt overall was correct, the next checkpoint in order_index sequence.
+    # Students whose most-recent correct attempt was on the LAST checkpoint count
+    # under the "done" key. Students with no attempts are omitted.
+    # Shape: {"<checkpoint_id>": int, ..., "done": int}
+    frontier_histogram: dict = {}
 
 
 class StuckStudent(BaseModel):

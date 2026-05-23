@@ -11,15 +11,56 @@ from __future__ import annotations
 import os
 
 import click
+import nbformat as nbf
 
-from . import lesson_store
+from . import lesson_store, notebook_starters
 from .api import CadenceAPI
 
 
 @click.group()
 @click.version_option(package_name="cadence-edu")
 def main():
-    """Cadence credential helpers (operates on ~/.cadence/lessons.yaml)."""
+    """Cadence credential helpers and notebook scaffolds."""
+
+
+@main.group()
+def new():
+    """Mint a starter Jupyter notebook with Cadence wiring pre-populated."""
+
+
+def _write_starter(nb, out_path: str, force: bool) -> None:
+    if os.path.exists(out_path) and not force:
+        click.echo(f"❌ {out_path} already exists. Re-run with --force to overwrite.")
+        raise SystemExit(1)
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    if out_dir and not os.path.isdir(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        nbf.write(nb, f)
+    click.echo(f"✅ Wrote {out_path}")
+    click.echo("   Open it with `jupyter notebook` (or your IDE) and run the cells in order.")
+
+
+@new.command("teacher")
+@click.option("--out", "out_path", default="teacher-setup.ipynb",
+              help="Output path for the notebook (default: ./teacher-setup.ipynb).")
+@click.option("--name", "lesson_name", default="My Lesson",
+              help="Lesson name pre-filled into %cadence_create_lesson.")
+@click.option("--force", is_flag=True, help="Overwrite the file if it already exists.")
+def new_teacher(out_path, lesson_name, force):
+    """Write a starter teacher notebook (lesson creation + checkpoint registration)."""
+    _write_starter(notebook_starters.teacher_starter(lesson_name=lesson_name), out_path, force)
+
+
+@new.command("student")
+@click.option("--out", "out_path", default="student.ipynb",
+              help="Output path for the notebook (default: ./student.ipynb).")
+@click.option("--name", "lesson_name", default="My Lesson",
+              help="Lesson name pre-filled into the notebook title.")
+@click.option("--force", is_flag=True, help="Overwrite the file if it already exists.")
+def new_student(out_path, lesson_name, force):
+    """Write a starter student notebook (session + example check)."""
+    _write_starter(notebook_starters.student_starter(lesson_name=lesson_name), out_path, force)
 
 
 @main.group()

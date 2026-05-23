@@ -7,7 +7,7 @@ dashboard. See https://cadence-dash.com for the hosted dashboard and the
 Setup Guide.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.6"
 __author__ = "Liv Vage"
 __email__ = "contact@cadence-dash.com"
 

@@ -108,7 +108,7 @@ const FeatureCard: React.FC<{ title: string; subtitle: string; children: React.R
   </Card>
 );
 
-const CommandRow: React.FC<{ cmd: string; what: string; who: 'teacher' | 'student' }> = ({ cmd, what, who }) => (
+const CommandRow: React.FC<{ cmd: string; what: string; who: 'teacher' | 'student' | 'both' }> = ({ cmd, what, who }) => (
   <TableRow>
     <TableCell sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.78rem', whiteSpace: 'nowrap', verticalAlign: 'top', py: 1 }}>
       {cmd}
@@ -161,6 +161,31 @@ const Guide: React.FC = () => {
               Quick one-off lessons (no roster, ephemeral) don't strictly require an account, but
               creating a course (semester-style) does.
             </Inline>
+            <Box sx={{ mt: 2 }}>
+              <SectionLabel>Starter notebooks</SectionLabel>
+              <Inline>
+                Don't want to start from a blank cell? The package ships a CLI that drops a
+                pre-wired notebook in the current directory:
+              </Inline>
+              <CodeBlock lang="bash">{`cadence-cli new teacher --name "Week 3: Fibonacci"
+cadence-cli new student --name "Week 3: Fibonacci"`}</CodeBlock>
+              <Inline>
+                The teacher scaffold already has <code>%load_ext cadence</code>,{' '}
+                <code>%cadence_create_lesson</code>, a YAML registration block, and{' '}
+                <code>%cadence_self_test</code> in order. The student scaffold has a
+                placeholder <code>%cadence_session</code> line and one example{' '}
+                <code>check(...)</code>. Both are tiny on purpose — they're a launching pad, not a
+                tutorial.
+              </Inline>
+              <Inline>
+                <strong>While you're typing magics</strong>, hit{' '}
+                <code>%cadence_<kbd>Tab</kbd></code> to autocomplete the magic name,{' '}
+                <code>%cadence_register?</code> for full argument help on any one command, or{' '}
+                <code>%cadence_help</code> for a one-page cheatsheet of every magic with its
+                syntax. After typing <code>%cadence_lesson{' '}</code> the cached lesson names
+                tab-complete too.
+              </Inline>
+            </Box>
           </Step>
 
           <Step n={2} title="Create your first lesson">
@@ -205,28 +230,30 @@ const Guide: React.FC = () => {
                 — the value to compare against, as JSON.
               </Typography>
             </Box>
-            <Inline>The simplest possible registration:</Inline>
-            <CodeBlock>{`%cadence_register array_mean --comparator numeric --expected 49.5`}</CodeBlock>
             <Inline>
-              In the student notebook, a cell that ends in <code>check("array_mean", value)</code>{' '}
-              will check <code>value</code> against <code>49.5</code> using numeric comparison
-              (which tolerates floating-point noise). The student sees ✅ or ❌ inline; you see the
-              attempt on the dashboard.
+              Two equivalent forms are available — pick whichever fits the cell you're writing.
             </Inline>
 
             <Box sx={{ mt: 1 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
-                <SectionLabel>Bulk registration with YAML</SectionLabel>
-                <Chip
-                  size="small"
-                  label="recommended"
-                  color="primary"
-                  sx={{ fontSize: '0.65rem', height: 18, mb: 1.5 }}
-                />
-              </Box>
+              <SectionLabel>One-liner per checkpoint</SectionLabel>
               <Inline>
-                For anything beyond a couple of checkpoints, the YAML form is much tidier — same
-                fields, no flag noise, multi-line solution code works naturally. Inline in a cell:
+                Flag-driven, fits on one line, good when you're sketching out a single checkpoint
+                while you write the lab:
+              </Inline>
+              <CodeBlock>{`%cadence_register array_mean --comparator numeric --expected 49.5`}</CodeBlock>
+              <Inline>
+                In the student notebook, a cell that ends in <code>check("array_mean", value)</code>{' '}
+                will check <code>value</code> against <code>49.5</code> using numeric comparison
+                (which tolerates floating-point noise). The student sees ✅ or ❌ inline; you see the
+                attempt on the dashboard.
+              </Inline>
+            </Box>
+
+            <Box sx={{ mt: 2 }}>
+              <SectionLabel>Bulk registration with YAML</SectionLabel>
+              <Inline>
+                Same fields as the flag form, but as a block — multi-line solution code, hints, and
+                section structure read more naturally when you have several checkpoints in one place:
               </Inline>
               <CodeBlock lang="yaml">{`%%cadence_register_yaml
 - id: setup.mean-value
@@ -651,6 +678,24 @@ fib(10)`}</CodeBlock>
                 works after that.
               </Typography>
 
+              <SectionLabel>Discovering commands</SectionLabel>
+              <Table size="small" sx={{ mb: 3 }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 600 }}>Command</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>What it does</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Who</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  <CommandRow cmd="%cadence_help [substr]" what="One-stop cheatsheet of every Cadence magic, with syntax. Optional substring filter." who="both" />
+                  <CommandRow cmd="%cadence_register?" what="(works on any magic) Argparse-style help: arguments, defaults, examples." who="both" />
+                  <CommandRow cmd="cadence-cli new teacher --name 'X'" what="Drop a starter teacher notebook in the current directory." who="teacher" />
+                  <CommandRow cmd="cadence-cli new student --name 'X'" what="Drop a starter student notebook in the current directory." who="teacher" />
+                  <CommandRow cmd="cadence-cli lessons list" what="Show every lesson/course cached in ~/.cadence/lessons.yaml." who="teacher" />
+                </TableBody>
+              </Table>
+
               <SectionLabel>Authentication and account</SectionLabel>
               <Table size="small" sx={{ mb: 3 }}>
                 <TableHead>
@@ -719,7 +764,7 @@ fib(10)`}</CodeBlock>
                 </TableHead>
                 <TableBody>
                   <CommandRow cmd={`%cadence_register id --comparator X --expected '<json>'`} what="Register a single checkpoint. See the comparator table above for examples." who="teacher" />
-                  <CommandRow cmd={`%%cadence_register_yaml`} what="Bulk-register from an inline YAML body. Recommended for more than a few checkpoints." who="teacher" />
+                  <CommandRow cmd={`%%cadence_register_yaml`} what="Bulk-register from an inline YAML body — same fields as the flag form, in block layout." who="teacher" />
                   <CommandRow cmd={`%cadence_register_yaml_file path/to/file.yaml`} what="Bulk-register from a YAML file on disk." who="teacher" />
                   <CommandRow cmd={`%cadence_self_test`} what="Submit the teacher's expected answers to verify they parse and pass." who="teacher" />
                 </TableBody>

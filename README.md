@@ -129,7 +129,14 @@ please flag it via `contact@cadence-dash.com`.
 pip install cadence-edu
 ```
 
-In a notebook:
+Then either drop a pre-wired starter notebook with the CLI:
+
+```bash
+cadence-cli new teacher --name "Week 3: Fibonacci"   # writes ./teacher-setup.ipynb
+cadence-cli new student --name "Week 3: Fibonacci"   # writes ./student.ipynb
+```
+
+…or write your own. Either way the first cells look like:
 
 ```python
 %load_ext cadence
@@ -139,6 +146,12 @@ In a notebook:
 
 Sign-in is required for **courses** and surfaces your lessons in the
 library. Quick one-off lessons work without it.
+
+> While you're writing magics, `%cadence_<Tab>` autocompletes the magic name,
+> `%cadence_register?` shows full argparse help on any one command, and
+> `%cadence_help` prints a one-page cheatsheet of every Cadence magic.
+> Cached lesson/course names tab-complete after `%cadence_lesson` /
+> `%cadence_course`.
 
 ### Create a lesson
 

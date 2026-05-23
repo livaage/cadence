@@ -198,7 +198,42 @@ function TimingChart({ histogram, samples }: { histogram: Record<string, number>
   );
 }
 
-function CompletionChart({ histogram, totalCheckpoints }: { histogram: Record<string, number>; totalCheckpoints: number }) {
+function CompletionTooltip({ active, payload, checkpointNames }: any) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload;
+  const k = Number(row.bucket);
+  const count = row.count as number;
+  const through = checkpointNames.slice(0, k);
+  return (
+    <div style={{ background: 'white', border: '1px solid #ccc', padding: 10, borderRadius: 4, fontSize: 12, maxWidth: 320 }}>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>
+        {k} checkpoint{k === 1 ? '' : 's'} solved — {count} student{count === 1 ? '' : 's'}
+      </div>
+      {through.length === 0 ? (
+        <div style={{ color: '#666', fontStyle: 'italic' }}>No checkpoints yet.</div>
+      ) : (
+        <div>
+          <div style={{ color: '#666', marginBottom: 4 }}>If solved in order, these would be done:</div>
+          {through.map((name: string, i: number) => (
+            <div key={i} style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 11, lineHeight: 1.5 }}>
+              {i + 1}. {name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompletionChart({
+  histogram,
+  totalCheckpoints,
+  checkpointNames,
+}: {
+  histogram: Record<string, number>;
+  totalCheckpoints: number;
+  checkpointNames: string[];
+}) {
   const data = Array.from({ length: totalCheckpoints + 1 }, (_, i) => ({
     bucket: `${i}`,
     count: histogram[`${i}`] ?? 0,
@@ -209,8 +244,66 @@ function CompletionChart({ histogram, totalCheckpoints }: { histogram: Record<st
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey="bucket" label={{ value: 'checkpoints solved', position: 'insideBottom', dy: 10 }} />
         <YAxis allowDecimals={false} />
-        <RechartsTooltip />
+        <RechartsTooltip
+          cursor={{ fill: 'rgba(127, 144, 129, 0.08)' }}
+          content={(props) => <CompletionTooltip {...props} checkpointNames={checkpointNames} />}
+        />
         <Bar dataKey="count" fill="#7F9081" radius={[4, 4, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function FrontierTooltip({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload;
+  const count = row.count as number;
+  return (
+    <div style={{ background: 'white', border: '1px solid #ccc', padding: 8, borderRadius: 4, fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>{row.fullLabel}</div>
+      <div style={{ color: '#666' }}>{count} student{count === 1 ? '' : 's'} working here</div>
+    </div>
+  );
+}
+
+function FrontierChart({
+  histogram,
+  checkpointIds,
+}: {
+  histogram: Record<string, number>;
+  checkpointIds: string[];
+}) {
+  const data = [
+    ...checkpointIds.map((id) => ({
+      bucket: parseCheckpointId(id).label,
+      fullLabel: id,
+      count: histogram[id] ?? 0,
+    })),
+    { bucket: 'done', fullLabel: 'finished the last checkpoint', count: histogram['done'] ?? 0 },
+  ];
+  const total = data.reduce((s, d) => s + d.count, 0);
+  if (total === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        No active frontier yet — once students start attempting checkpoints they'll appear here.
+      </Typography>
+    );
+  }
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={data} margin={{ top: 5, right: 8, left: 0, bottom: 30 }}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis
+          dataKey="bucket"
+          interval={0}
+          angle={-25}
+          textAnchor="end"
+          tick={{ fontSize: 11, fontFamily: '"JetBrains Mono", monospace' }}
+          height={50}
+        />
+        <YAxis allowDecimals={false} />
+        <RechartsTooltip cursor={{ fill: 'rgba(209, 119, 83, 0.08)' }} content={<FrontierTooltip />} />
+        <Bar dataKey="count" fill="#D17753" radius={[4, 4, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -311,7 +404,9 @@ function StatBlock({ label, value, sub }: { label: string; value: React.ReactNod
   );
 }
 
-function SummaryCard({ summary }: { summary: LessonSummaryStats }) {
+function SummaryCard({ summary, checkpoints }: { summary: LessonSummaryStats; checkpoints: CheckpointLiveStats[] }) {
+  const checkpointIds = checkpoints.map((c) => c.checkpoint_id);
+  const checkpointNames = checkpoints.map((c) => parseCheckpointId(c.checkpoint_id).label);
   return (
     <Card sx={{ mb: 3 }}>
       <CardContent sx={{ pt: 2.5 }}>
@@ -355,6 +450,7 @@ function SummaryCard({ summary }: { summary: LessonSummaryStats }) {
               <CompletionChart
                 histogram={summary.completion_histogram}
                 totalCheckpoints={summary.total_checkpoints}
+                checkpointNames={checkpointNames}
               />
             )}
           </Grid>
@@ -397,6 +493,32 @@ function SummaryCard({ summary }: { summary: LessonSummaryStats }) {
             )}
           </Grid>
         </Grid>
+        {summary.total_checkpoints > 0 && (
+          <Box sx={{ mt: 3 }}>
+            <Typography
+              variant="caption"
+              sx={{
+                display: 'block',
+                color: 'text.secondary',
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+                fontSize: '0.7rem',
+                fontWeight: 600,
+                mb: 0.5,
+              }}
+            >
+              Where students are working
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              One bar per checkpoint: count of students whose current frontier is here. Frontier = their most recent
+              wrong attempt, or the next checkpoint after their most recent correct one.
+            </Typography>
+            <FrontierChart
+              histogram={summary.frontier_histogram || {}}
+              checkpointIds={checkpointIds}
+            />
+          </Box>
+        )}
       </CardContent>
     </Card>
   );
@@ -1141,7 +1263,7 @@ export default function LiveProgress() {
               </Tooltip>
             </Box>
           </Box>
-          <SummaryCard summary={data.summary} />
+          <SummaryCard summary={data.summary} checkpoints={data.checkpoints} />
           {showRoster && data.student_roster.length > 0 && (
             <StudentRoster roster={data.student_roster} />
           )}

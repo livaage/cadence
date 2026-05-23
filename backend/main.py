@@ -2435,6 +2435,44 @@ async def get_live_progress(
         for (cp_id, val), cnt in wrong_pair_counter.most_common(5)
     ]
 
+    # "Where students are" frontier: for each session, find the most recent
+    # attempt overall. If wrong → that checkpoint is their frontier. If correct
+    # → the next checkpoint (by order_index) is their frontier; if there is no
+    # next one, they fall into the "done" bucket. Sessions with zero attempts
+    # are not counted.
+    cp_id_to_order = {cp.checkpoint_id: cp.order_index for cp in checkpoints}
+    ordered_cp_ids = [cp.checkpoint_id for cp in checkpoints]  # already sorted by order_index
+    last_attempt_by_sid: dict = {}  # sid -> AttemptEvent
+    for e in events:
+        prev = last_attempt_by_sid.get(e.session_id)
+        if prev is None or e.created_at > prev.created_at:
+            last_attempt_by_sid[e.session_id] = e
+
+    frontier_counter: Counter = Counter()
+    for sid, last in last_attempt_by_sid.items():
+        if not last.is_correct:
+            frontier_counter[last.checkpoint_id] += 1
+            continue
+        # Last attempt was correct — frontier is the next checkpoint in order.
+        cur_order = cp_id_to_order.get(last.checkpoint_id)
+        if cur_order is None:
+            # Checkpoint was deleted after the attempt — skip.
+            continue
+        next_idx = None
+        for i, cp_id in enumerate(ordered_cp_ids):
+            if cp_id == last.checkpoint_id:
+                next_idx = i + 1
+                break
+        if next_idx is None or next_idx >= len(ordered_cp_ids):
+            frontier_counter["done"] += 1
+        else:
+            frontier_counter[ordered_cp_ids[next_idx]] += 1
+
+    # Ensure every checkpoint id (and "done") has an entry so the frontend can
+    # render a stable axis even when a bucket is zero.
+    frontier_histogram = {cp_id: frontier_counter.get(cp_id, 0) for cp_id in ordered_cp_ids}
+    frontier_histogram["done"] = frontier_counter.get("done", 0)
+
     summary = LessonSummaryStats(
         total_sessions=total_sessions,
         total_checkpoints=total_checkpoints,
@@ -2444,6 +2482,7 @@ async def get_live_progress(
         solve_rate_pct=round(solve_rate, 1),
         completion_histogram=completion_histogram,
         top_wrong_overall=top_wrong_overall,
+        frontier_histogram=frontier_histogram,
     )
 
     # Per-session roster: one entry per student with per-checkpoint detail.

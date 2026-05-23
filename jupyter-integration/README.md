@@ -12,6 +12,22 @@ pip install cadence-edu
 
 ## Quickstart (5 minutes)
 
+The fastest path: let the CLI mint both notebooks for you, then edit in place.
+
+```bash
+pip install cadence-edu
+
+cadence-cli new teacher --name "Fibonacci warm-up"   # writes ./teacher-setup.ipynb
+cadence-cli new student --name "Fibonacci warm-up"   # writes ./student.ipynb
+```
+
+Each starter has the right magics pre-wired — `%load_ext cadence`,
+`%cadence_create_lesson` / `%cadence_session`, a YAML registration block, an
+example `check(...)` — so you can `jupyter notebook` straight into editing
+real content.
+
+If you'd rather copy a cell by hand:
+
 **Teacher notebook** (run once per lesson, keep it private):
 
 ```python
@@ -38,6 +54,12 @@ check("fib-10", fib(10))
 ```
 
 The teacher's dashboard updates live as students submit. That's the whole product.
+
+> **Discovering commands as you go**: type `%cadence_<Tab>` for autocompletion,
+> `%cadence_register?` for argparse-style help on any magic, or
+> `%cadence_help` for a one-page cheatsheet of every Cadence magic with its
+> exact syntax. After typing `%cadence_lesson` (or `%cadence_course`) the
+> names cached in `~/.cadence/lessons.yaml` tab-complete too.
 
 ---
 
@@ -253,7 +275,27 @@ Measures wall-clock time and submits the last-expression value as the answer. On
 
 ## CLI helpers
 
-The package also installs a `cadence-cli` for managing locally-cached teacher credentials from the shell — useful when the server-side lesson has been deleted but the local YAML is stale, or when you suspect a token leak:
+The package also installs a `cadence-cli` for two jobs from the shell:
+
+**Scaffold a starter notebook.** Drops a pre-wired `.ipynb` in the current
+directory so you don't start from a blank cell:
+
+```bash
+cadence-cli new teacher --name "Week 3: Fibonacci"    # writes ./teacher-setup.ipynb
+cadence-cli new student --name "Week 3: Fibonacci"    # writes ./student.ipynb
+cadence-cli new teacher --out path/to/setup.ipynb --force   # custom location, overwrite
+```
+
+The teacher scaffold has `%load_ext cadence` → `%cadence_login` →
+`%cadence_create_lesson` → a YAML registration block → `%cadence_self_test`
+in order. The student scaffold has a placeholder `%cadence_session` line and
+one example `check(...)`. Both are tiny on purpose — they're a launching
+pad, not a tutorial. The longer-form particle-physics demos live at
+[cadence-dash.com/demo](https://cadence-dash.com/demo).
+
+**Manage locally-cached teacher credentials** — useful when the server-side
+lesson has been deleted but the local YAML is stale, or when you suspect a
+token leak:
 
 ```bash
 cadence-cli lessons list                              # every cached lesson + course, tokens masked

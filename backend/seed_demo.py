@@ -95,10 +95,95 @@ CHECKPOINTS = [
         "comparator": "manual",
         "expected_payload": None,
         "hint": "Briefly describe what the peak shape tells you.",
+        "allow_submissions": True,
         "order_index": 6,
         "expected_correct": None,
         "common_wrong": [],
     },
+]
+
+# Pre-rendered student plots for discovery.higgs-peak. Regenerated locally via
+# backend/demo_assets/generate_plots.py — the backend container doesn't ship
+# matplotlib so we keep the PNGs checked in.
+HIGGS_PLOT_SAMPLES = [
+    ("Amelia R.", "higgs_amelia.png"),
+    ("Priya S.", "higgs_priya.png"),
+    ("Henrik J.", "higgs_henrik.png"),
+    ("Yuki K.", "higgs_yuki.png"),
+]
+
+# Reflection-text submissions for discovery.reflect. Each tuple is
+# (student_name, prose). These land in the submissions feed for the checkpoint
+# so the dashboard demo shows the prose-submission UX, not just code.
+REFLECTION_SAMPLES = [
+    (
+        "Amelia R.",
+        "The bump sits right at 125 GeV on top of an otherwise flat background — "
+        "exactly what a narrow resonance looks like. ATLAS and CMS independently "
+        "seeing the same peak is what makes it credible as a real particle and "
+        "not a statistical fluke.",
+    ),
+    (
+        "Tomás G.",
+        "Background is roughly uniform across 100–150 GeV, so the only structure "
+        "is the Gaussian-ish excess near 125. The width of the bump in the toy "
+        "data is comparable to the bin size, which is the calorimeter resolution "
+        "limit in a real analysis.",
+    ),
+    (
+        "Priya S.",
+        "Most diphoton pairs are random — they pile up evenly across the mass "
+        "range. The Higgs shows up only because its decay always produces the "
+        "same invariant mass, so its events stack into a single bin. That's why "
+        "high statistics matter: the background averages out, the signal doesn't.",
+    ),
+    (
+        "Marcus L.",
+        "If I bin too coarsely the peak smears into the background; too finely "
+        "and statistical noise dominates. 1 GeV bins are a decent compromise for "
+        "500 events. Real ATLAS uses ~0.5 GeV bins because their detector "
+        "resolution is that good and they have 10^9 events to play with.",
+    ),
+    (
+        "Noor A.",
+        "The fact that the peak is at an integer GeV value is an artifact of how "
+        "I picked the bin edges — the underlying Gaussian is centred at 125.0 in "
+        "the toy. Real life: the Higgs mass is measured to be 125.10 ± 0.14 GeV.",
+    ),
+    (
+        "Felix M.",
+        "Took me a while to realise that the 'peak' in argmax-of-counts can land "
+        "in a neighbouring bin if the random draw happens to fluctuate up there. "
+        "More events = more stable peak finder. The look-elsewhere effect is "
+        "exactly this problem at the experiment scale.",
+    ),
+    (
+        "Sofia D.",
+        "Beautiful that the same recipe — four-vectors, invariant mass, "
+        "histogram — gives a textbook discovery plot. The hard part for the "
+        "actual experiment is rejecting the QCD diphoton background, not the "
+        "histogramming.",
+    ),
+    (
+        "Yuki K.",
+        "I plotted with offset bin edges first and got 124, then realised the "
+        "bin centre versus left edge ambiguity matters here. Lesson for future "
+        "histograms: always print the edges alongside the answer.",
+    ),
+    (
+        "Henrik J.",
+        "The signal is a Gaussian with σ ≈ 1.5 GeV sitting on a flat background. "
+        "Counting events in a ±3σ window around 125 gives roughly the signal "
+        "yield minus the background's share of that window — that's the "
+        "simplest 'signal significance' you can compute by hand.",
+    ),
+    (
+        "Olu A.",
+        "What surprised me: 80 signal events on 450 background was enough to "
+        "see the peak clearly. The real Higgs discovery used about 10⁻⁶ of the "
+        "total collision rate, but with 10¹⁰ collisions per second the signal "
+        "still racks up fast.",
+    ),
 ]
 
 # Realistic-but-fictional student names. Mix of given names + initials to read like
@@ -345,6 +430,54 @@ def add_code_submissions(db, lesson_id_str: str, name_to_session: dict) -> None:
         )
 
 
+def add_plot_submissions(db, lesson_id_str: str, name_to_session: dict) -> None:
+    """Image-only submissions for discovery.higgs-peak — the dashboard renders
+    these as inline plots so the demo shows the submit_image() workflow."""
+    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo_assets")
+    for name, filename in HIGGS_PLOT_SAMPLES:
+        sess = name_to_session.get(name)
+        if not sess:
+            continue
+        path = os.path.join(assets_dir, filename)
+        if not os.path.exists(path):
+            print(f"  warning: plot asset {filename} missing — skipping", file=sys.stderr)
+            continue
+        with open(path, "rb") as fh:
+            png_bytes = fh.read()
+        db.add(
+            CodeSubmission(
+                session_id=sess.id,
+                lesson_id=lesson_id_str,
+                checkpoint_id="discovery.higgs-peak",
+                code=None,
+                language="python",
+                image_data=png_bytes,
+                image_mime="image/png",
+                submitted_at=sess.last_seen_at,
+            )
+        )
+
+
+def add_reflection_submissions(db, lesson_id_str: str, name_to_session: dict) -> None:
+    """Prose submissions for the manual discovery.reflect checkpoint. The
+    checkpoint is allow_submissions=True so %%cadence_submit ships the
+    reflection text alongside the mark_done() self-attestation."""
+    for name, prose in REFLECTION_SAMPLES:
+        sess = name_to_session.get(name)
+        if not sess:
+            continue
+        db.add(
+            CodeSubmission(
+                session_id=sess.id,
+                lesson_id=lesson_id_str,
+                checkpoint_id="discovery.reflect",
+                code=prose,
+                language="text",
+                submitted_at=sess.last_seen_at,
+            )
+        )
+
+
 def main() -> None:
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
@@ -383,6 +516,8 @@ def main() -> None:
                 name_to_session[name] = sess
 
         add_code_submissions(db, lesson_id_str, name_to_session)
+        add_plot_submissions(db, lesson_id_str, name_to_session)
+        add_reflection_submissions(db, lesson_id_str, name_to_session)
         db.commit()
 
         print(f"Seeded demo lesson '{lesson.name}'")

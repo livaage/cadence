@@ -8,7 +8,7 @@ def read_readme():
 
 setup(
     name="cadence-edu",
-    version="0.1.3",
+    version="0.1.6",
     author="Liv Vage",
     author_email="contact@cadence-dash.com",
     description="Cadence — live student progress dashboards for Jupyter teaching",

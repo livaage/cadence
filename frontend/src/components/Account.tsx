@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -20,6 +20,7 @@ import { closeMyAccount, setMyPassword, formatApiError } from '../services/api';
 
 const Account: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const { teacher, loading, signOut, refresh } = useAuth();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -46,7 +47,8 @@ const Account: React.FC = () => {
 
   if (loading) return null;
   if (!teacher) {
-    navigate('/login', { replace: true });
+    const next = encodeURIComponent(location.pathname + location.search);
+    navigate(`/login?next=${next}`, { replace: true });
     return null;
   }
 

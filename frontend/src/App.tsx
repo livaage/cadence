@@ -1,6 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate, Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
-import { Box, AppBar, Toolbar, Container, Stack, Button, Typography, Link as MuiLink } from '@mui/material';
+import { Alert, Box, AppBar, Toolbar, Container, Stack, Button, Typography, Link as MuiLink } from '@mui/material';
 
 import Welcome from './components/Welcome';
 import LiveProgress from './components/LiveProgress';
@@ -78,6 +78,34 @@ function Navigation() {
   );
 }
 
+// Reminds OAuth-only teachers (no local password) to set one so they can use
+// %cadence_login from Jupyter. Hidden on the account page itself (where they'd
+// already be setting one) and on auth pages (where teacher is briefly null).
+function SetPasswordBanner() {
+  const { teacher } = useAuth();
+  const location = useLocation();
+  if (!teacher || teacher.has_password) return null;
+  if (location.pathname.startsWith('/teacher/account')) return null;
+  return (
+    <Alert
+      severity="info"
+      sx={{ borderRadius: 0, justifyContent: 'center' }}
+      action={
+        <Button
+          component={RouterLink}
+          to="/teacher/account?prompt=password"
+          size="small"
+          sx={{ textTransform: 'none' }}
+        >
+          Set password
+        </Button>
+      }
+    >
+      You haven't set a Jupyter password yet — needed for <code>%cadence_login</code>.
+    </Alert>
+  );
+}
+
 function Footer() {
   return (
     <Box
@@ -128,6 +156,7 @@ function App() {
     <AuthProvider>
       <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
         <Navigation />
+        <SetPasswordBanner />
         <Container maxWidth="lg" sx={{ mt: 4, mb: 4, flexGrow: 1 }}>
           <Routes>
             <Route path="/" element={<Welcome />} />

@@ -83,13 +83,17 @@ class CadenceMagic(Magics):
         self._initialize_api()
     
     def _initialize_api(self):
-        """Initialize the API client"""
+        """Initialize the API client.
+
+        No network probe here — %load_ext must stay offline-safe. A transient
+        gateway response (non-JSON body, captive portal, corporate proxy) used
+        to surface as a scary "API request failed: Expecting value..." in the
+        load cell AND wedge self.api=None for the rest of the kernel, so every
+        magic would report "❌ API not available". Each magic does its own
+        network call with a real error message; let that be the source of truth.
+        """
         try:
             self.api = CadenceAPI()
-            # Test connection
-            status = self.api.status()
-            if status.get('status') == 'error':
-                self.api = None
         except Exception:
             self.api = None
     
@@ -323,7 +327,7 @@ class CadenceMagic(Magics):
 
     def _dashboard_url(self, teacher_token: str) -> str:
         base = os.getenv("CADENCE_DASHBOARD_URL",
-                         os.getenv("CADENCE_WEB_URL", "http://localhost:3000"))
+                         os.getenv("CADENCE_WEB_URL", "https://cadence-dash.com"))
         return f"{base.rstrip('/')}/teacher/live?token={teacher_token}"
 
     # ------------------------------------------------------------------
@@ -559,13 +563,17 @@ class CadenceMagic(Magics):
     def _copy_button(text: str, label: str = "Copy") -> str:
         """Return HTML for a button that copies `text` to the clipboard on click.
 
-        Handles backslashes, single quotes, and newlines so multi-line snippets
-        round-trip correctly via navigator.clipboard.writeText."""
+        Two layers of escaping: first for the JS string literal (backslashes,
+        single quotes, newlines), then for the HTML attribute that wraps the
+        whole onclick handler (`"` would otherwise close the attribute mid-way
+        — e.g. the student snippet contains `"your-name"`, which used to break
+        the button and mangle everything after it in the card)."""
         safe = (text
                 .replace("\\", "\\\\")
                 .replace("'", "\\'")
                 .replace("\n", "\\n")
                 .replace("\r", "\\r"))
+        safe = safe.replace("&", "&amp;").replace('"', "&quot;")
         return (
             f'<button onclick="navigator.clipboard.writeText(\'{safe}\');'
             f'this.innerText=\'✓ Copied\';setTimeout(()=>{{this.innerText=\'{label}\';}},1500);"'
@@ -817,7 +825,7 @@ class CadenceMagic(Magics):
 
     def _course_dashboard_url(self, teacher_token: str) -> str:
         base = os.getenv("CADENCE_DASHBOARD_URL",
-                         os.getenv("CADENCE_WEB_URL", "http://localhost:3000"))
+                         os.getenv("CADENCE_WEB_URL", "https://cadence-dash.com"))
         return f"{base.rstrip('/')}/teacher/course?token={teacher_token}"
 
     def _render_course_card(self, course: dict, created: bool) -> None:
@@ -2262,6 +2270,179 @@ class CadenceMagic(Magics):
             f'<div style="color: #6b21a8;">📤 Code submitted to '
             f'<code>{checkpoint_id}</code>. The teacher can see it on the dashboard.</div>'
         ))
+
+    # ------------------------------------------------------------------
+    # Discoverability: cheatsheet of every magic, grouped, with syntax.
+    # ------------------------------------------------------------------
+
+    @line_magic
+    def cadence_help(self, line):
+        """Print a one-stop cheatsheet of every %cadence_* magic.
+
+        Usage:
+            %cadence_help            # show everything
+            %cadence_help register   # filter to commands matching a substring
+
+        Each row gives the exact syntax and a one-line summary, grouped by
+        role (auth / lessons / courses / checkpoints / student / data rights).
+        Pair this with `%<magic>?` for full argparse-style help on any one
+        command.
+        """
+        groups = _help_table()
+        needle = (line or "").strip().lower()
+        rows_html: list[str] = []
+        total_shown = 0
+        for group_name, entries in groups:
+            shown = [
+                e for e in entries
+                if not needle or needle in e["cmd"].lower() or needle in e["what"].lower()
+            ]
+            if not shown:
+                continue
+            rows_html.append(
+                f'<tr><td colspan="2" style="padding-top: 14px; '
+                f'font-size: 0.72em; letter-spacing: 0.06em; text-transform: uppercase; '
+                f'color: #475569; font-weight: 700;">{group_name}</td></tr>'
+            )
+            for e in shown:
+                total_shown += 1
+                # Tag the role so a teacher screen-sharing sees who runs what.
+                role_color = {"teacher": "#1d4ed8", "student": "#047857", "both": "#6b7280"}.get(e["role"], "#6b7280")
+                role_tag = (
+                    f'<span style="font-size: 0.7em; padding: 1px 6px; border-radius: 8px; '
+                    f'background: {role_color}1a; color: {role_color}; '
+                    f'margin-left: 6px; vertical-align: 1px;">{e["role"]}</span>'
+                )
+                cmd_html = (
+                    f'<code style="font-family: ui-monospace, Menlo, monospace; font-size: 0.85em; '
+                    f'color: #0f172a; background: rgba(15,23,42,0.05); padding: 1px 6px; '
+                    f'border-radius: 3px; white-space: nowrap;">{e["cmd"]}</code>{role_tag}'
+                )
+                rows_html.append(
+                    f'<tr>'
+                    f'<td style="padding: 4px 14px 4px 0; vertical-align: top; white-space: nowrap;">{cmd_html}</td>'
+                    f'<td style="padding: 4px 0; vertical-align: top; color: #334155; font-size: 0.92em;">'
+                    f'{e["what"]}</td>'
+                    f'</tr>'
+                )
+
+        if total_shown == 0:
+            return display(HTML(
+                f'<div style="color: #b45309;">No Cadence magics matched '
+                f'<code>{needle}</code>. Try <code>%cadence_help</code> with no filter.</div>'
+            ))
+
+        header_filter = (
+            f' filtered to <code>{needle}</code>' if needle else ''
+        )
+        display(HTML(f'''
+            <div style="font-family: ui-sans-serif, system-ui, sans-serif;
+                        border: 1px solid #e2e8f0; border-radius: 8px;
+                        padding: 14px 18px; margin: 6px 0; background: #fafafa;">
+                <div style="font-weight: 600; font-size: 1rem; margin-bottom: 2px;">
+                    Cadence magics cheatsheet
+                </div>
+                <div style="font-size: 0.82em; color: #64748b; margin-bottom: 8px;">
+                    {total_shown} command{'s' if total_shown != 1 else ''}{header_filter}.
+                    Append <code>?</code> to any magic for full argument help —
+                    e.g. <code>%cadence_register?</code>.
+                </div>
+                <table style="border-collapse: collapse; width: 100%;">
+                    {''.join(rows_html)}
+                </table>
+            </div>
+        '''))
+
+
+def _help_table() -> list:
+    """Static cheatsheet — kept in one place so %cadence_help and the Guide
+    stay consistent. Update here when a magic is added or its arguments shift.
+
+    Each entry: {"cmd": <exact syntax>, "what": <one-liner>, "role": one of
+    "teacher" / "student" / "both"}. The grouping order is the order they'd
+    naturally come up in a fresh classroom.
+    """
+    return [
+        ("Setup", [
+            {"cmd": "%load_ext cadence", "what": "Enable Cadence magics in this notebook.", "role": "both"},
+            {"cmd": "%cadence_help [substr]", "what": "This cheatsheet. Optional substring filters the list.", "role": "both"},
+        ]),
+        ("Teacher: auth", [
+            {"cmd": "%cadence_login", "what": "Sign in to the hosted dashboard (username/password or GitHub).", "role": "teacher"},
+            {"cmd": "%cadence_logout", "what": "Forget the current teacher token cached on this machine.", "role": "teacher"},
+            {"cmd": "%cadence_whoami", "what": "Show which teacher account this kernel is signed in as.", "role": "teacher"},
+        ]),
+        ("Teacher: lessons", [
+            {"cmd": '%cadence_create_lesson "<name>" [--code X] [--force]',
+             "what": "Mint a new lesson. Prints the join code and dashboard URL.", "role": "teacher"},
+            {"cmd": '%cadence_lesson "<name>"',
+             "what": "Re-activate a previously-created lesson from the local cache.", "role": "teacher"},
+            {"cmd": '%cadence_show_join "<name>"',
+             "what": "Reprint the join code + dashboard URL for a cached lesson.", "role": "teacher"},
+            {"cmd": '%cadence_clone_lesson "<name>" [--as "<new>"]',
+             "what": "Duplicate a lesson and its checkpoints under a fresh join code.", "role": "teacher"},
+            {"cmd": '%cadence_delete_lesson "<name>" [--yes]',
+             "what": "Permanently delete a lesson and every session that touched it.", "role": "teacher"},
+            {"cmd": "%cadence_rotate_token [--also-join-code]",
+             "what": "Mint a fresh teacher_token (useful if leaked).", "role": "teacher"},
+            {"cmd": "%cadence_set_retention --days N [--course]",
+             "what": "Lower the per-session retention window for this lesson/course.", "role": "teacher"},
+        ]),
+        ("Teacher: courses", [
+            {"cmd": '%cadence_create_course "<name>" [--retention-days N]',
+             "what": "Create a course (a bundle of lessons + a single join code).", "role": "teacher"},
+            {"cmd": '%cadence_course "<name>"',
+             "what": "Re-activate a previously-created course from the local cache.", "role": "teacher"},
+            {"cmd": '%cadence_add_notebook "<name>" [--order N]',
+             "what": "Add a new notebook to the active course.", "role": "teacher"},
+            {"cmd": '%cadence_attach_lesson "<lesson>" --to "<course>"',
+             "what": "Attach an existing lesson to a course (cached locally).", "role": "teacher"},
+            {"cmd": '%cadence_detach_lesson "<lesson>" --from "<course>"',
+             "what": "Remove a lesson from a course (lesson data is kept).", "role": "teacher"},
+            {"cmd": '%cadence_delete_course "<name>" [--yes]',
+             "what": "Permanently delete a course (lessons are detached, not deleted).", "role": "teacher"},
+        ]),
+        ("Teacher: checkpoints", [
+            {"cmd": "%cadence_register <id> --comparator X --expected '<json>' [--hint ...] [--allow-submissions]",
+             "what": "Register a single checkpoint. Flag-driven, fits on one line.", "role": "teacher"},
+            {"cmd": "%%cadence_register_yaml",
+             "what": "Bulk-register from an inline YAML body — same fields, block layout.", "role": "teacher"},
+            {"cmd": "%cadence_register_yaml_file path/to/file.yaml",
+             "what": "Bulk-register from a YAML file on disk (easy to version-control).", "role": "teacher"},
+            {"cmd": "%cadence_self_test",
+             "what": "Submit the teacher's expected answer for every auto-checked checkpoint.", "role": "teacher"},
+        ]),
+        ("Student: session + answers", [
+            {"cmd": '%cadence_session <join_code> "<display name>"',
+             "what": "Join a lesson or course under your chosen name (pseudonyms welcome).", "role": "student"},
+            {"cmd": '%cadence_notebook "<name>"',
+             "what": "Switch to a different notebook within an enrolled course.", "role": "student"},
+            {"cmd": 'check("<id>", value)',
+             "what": "Submit an answer for an auto-checked checkpoint. Returns ✅/❌ inline.", "role": "student"},
+            {"cmd": 'mark_done("<id>")',
+             "what": "Self-attest a manual / reflection checkpoint.", "role": "student"},
+            {"cmd": 'cadence.show_hint("<id>")',
+             "what": "Reveal the teacher's hint once you've made enough attempts.", "role": "student"},
+            {"cmd": 'cadence.show_solution("<id>")',
+             "what": "Reveal the worked solution once the threshold is hit.", "role": "student"},
+            {"cmd": 'cadence.submit_image("<id>", fig)',
+             "what": "Ship a matplotlib figure (or PNG bytes) to a submission-enabled checkpoint.", "role": "student"},
+            {"cmd": '%%cadence_submit <id>',
+             "what": "Run the cell normally AND ship its source to the teacher dashboard.", "role": "student"},
+            {"cmd": '%%cadence_time <id>',
+             "what": "Time the cell's execution and record it against this checkpoint.", "role": "student"},
+        ]),
+        ("Student: data rights", [
+            {"cmd": "%cadence_my_data",
+             "what": "Show exactly what Cadence has stored about this session.", "role": "student"},
+            {"cmd": "%cadence_export_my_data [--path FILE]",
+             "what": "Export your session data to a JSON file you keep.", "role": "student"},
+            {"cmd": "%cadence_delete_my_data [--yes]",
+             "what": "Wipe everything Cadence holds about this session. Irreversible.", "role": "student"},
+            {"cmd": "%cadence_accept_terms",
+             "what": "Record acceptance of the privacy notice + terms (for adults).", "role": "student"},
+        ]),
+    ]
 
 
 # IPython extension entry points live in extension.py — that's what

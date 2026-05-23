@@ -122,6 +122,8 @@ const Welcome: React.FC = () => {
             }}
           >
 {`pip install cadence-edu
+cadence-cli new teacher --name "Week 3: Fibonacci"
+# (or write the cells yourself)
 
 %load_ext cadence
 %cadence_create_lesson "Week 3: Fibonacci"`}
