@@ -240,6 +240,7 @@ class LessonSummary(BaseModel):
     name: str
     join_code: str
     teacher_token: str
+    session_retention_days: int = 7
     created_at: datetime
 
     class Config:
@@ -487,6 +488,7 @@ class LiveProgressResponse(BaseModel):
     lesson_id: str
     lesson_name: str
     join_code: str
+    session_retention_days: int = 7
     active_sessions: int
     summary: LessonSummaryStats
     checkpoints: List[CheckpointLiveStats]
@@ -521,6 +523,7 @@ class CourseSummary(BaseModel):
     name: str
     join_code: str
     teacher_token: str
+    session_retention_days: int = 90
     created_at: datetime
 
     class Config:
@@ -538,6 +541,10 @@ class CourseAddNotebook(BaseModel):
     """Add an existing Lesson (by its teacher_token) to the course."""
     lesson_teacher_token: str
     order_index: int = 0
+
+
+class SetRetentionRequest(BaseModel):
+    session_retention_days: int
 
 
 class RotateTokenRequest(BaseModel):
@@ -560,6 +567,7 @@ class CourseLiveResponse(BaseModel):
     course_id: str
     course_name: str
     join_code: str
+    session_retention_days: int = 90
     total_enrollments: int
     not_started: int  # enrolled but no current_notebook_id yet
     notebooks: List[CourseNotebookStat]

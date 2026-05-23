@@ -555,6 +555,10 @@ class CadenceMagic(Magics):
         dash = self._dashboard_url(lesson["teacher_token"])
         join_code = lesson["join_code"]
         teacher_token = lesson["teacher_token"]
+        retention = lesson.get("session_retention_days", 7)
+        # Built outside the HTML f-string so the literal \n in the snippet
+        # doesn't appear inside an f-string expression (3.12-only syntax).
+        student_snippet = f'%load_ext cadence\n%cadence_session {join_code} "your-name"'
         # If the teacher is logged in, the lesson is associated with their
         # account via teacher_id and shows up automatically in their library.
         # If not, the only way to find it again is the dashboard URL.
@@ -583,7 +587,7 @@ class CadenceMagic(Magics):
                     they don't need to type the code:
                     <pre style="background: white; padding: 8px 10px; margin: 4px 0 0; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; overflow-x: auto;">%load_ext cadence
 %cadence_session {join_code} "your-name"</pre>
-                    {self._copy_button(f'%load_ext cadence\n%cadence_session {join_code} "your-name"', "Copy snippet")}
+                    {self._copy_button(student_snippet, "Copy snippet")}
                 </div>
                 <div style="margin-top: 8px;">
                     🔗 <a href="{dash}" target="_blank">Open live dashboard</a>
@@ -594,6 +598,16 @@ class CadenceMagic(Magics):
                     <span style="color: #555;">Teacher token (keep secret):</span>
                     <code style="font-size: 0.85em; background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
                     {self._copy_button(teacher_token, "Copy token")}
+                </div>
+                <div style="margin-top: 8px; padding: 6px 10px; background: white; border-radius: 4px; font-size: 0.9em;">
+                    🗓 <strong>Data retention:</strong> each student session is wiped
+                    <strong>{retention} day{'s' if retention != 1 else ''}</strong>
+                    after the student last touches it. The default for quick
+                    lessons is 7 days. You can shorten this with
+                    <code>%cadence_set_retention --days N</code> — but per the
+                    Terms, you can't extend it (data subjects relied on the
+                    original promise). To wipe sooner, use
+                    <code>%cadence_delete_lesson "{lesson["name"]}" --yes</code>.
                 </div>
                 <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
                     Saved to <code>~/.cadence/lessons.yaml</code> ·
@@ -786,6 +800,7 @@ class CadenceMagic(Magics):
         dash = self._course_dashboard_url(course["teacher_token"])
         join_code = course["join_code"]
         teacher_token = course["teacher_token"]
+        retention = course.get("session_retention_days", 90)
         display(HTML(f'''
             <div style="border: 1px solid #7b1fa2; border-radius: 6px;
                         padding: 12px; margin: 8px 0; background: #faf5ff;">
@@ -804,6 +819,14 @@ class CadenceMagic(Magics):
                     <span style="color: #555;">Teacher token (keep secret):</span>
                     <code style="font-size: 0.85em; background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
                     {self._copy_button(teacher_token, "Copy token")}
+                </div>
+                <div style="margin-top: 8px; padding: 6px 10px; background: white; border-radius: 4px; font-size: 0.9em;">
+                    🗓 <strong>Data retention:</strong> each student session is wiped
+                    <strong>{retention} day{'s' if retention != 1 else ''}</strong>
+                    after the student last touches it. The default for courses
+                    is 90 days. You can shorten this with
+                    <code>%cadence_set_retention --course --days N</code> —
+                    but per the Terms, you can't extend it.
                 </div>
                 <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
                     <code>%cadence_add_notebook "&lt;name&gt;"</code> to add a notebook ·
@@ -1266,6 +1289,60 @@ class CadenceMagic(Magics):
         )
         self._render_lesson_card(resp, created=True)
 
+    @magic_arguments()
+    @argument('--days', type=int, required=True,
+              help='New retention in days. Must be SHORTER than the current value — retention can only be reduced, not extended (data subjects relied on the original promise).')
+    @argument('--course', action='store_true',
+              help='Target the active course instead of the active lesson.')
+    @line_magic
+    def cadence_set_retention(self, line):
+        """Shorten the session retention for the active lesson (default) or
+        active course (--course). Can only reduce, never extend — that's a
+        design constraint, not a bug. To extend, you'd have to clone the
+        lesson under a new name and migrate fresh students over.
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_set_retention, line)
+        if args.course:
+            active = _progress.current_course_teacher()
+            if not active:
+                return display(HTML(
+                    '<div style="color: red;">❌ No active course. Run '
+                    '<code>%cadence_course "..."</code> first.</div>'
+                ))
+            try:
+                resp = self.api.set_course_retention(active["teacher_token"], args.days)
+            except Exception as e:
+                return display(HTML(f'<div style="color: red;">❌ {e}</div>'))
+            _progress.set_course_teacher(
+                teacher_token=resp["teacher_token"],
+                course_id=resp["id"],
+                course_name=resp["name"],
+                join_code=resp["join_code"],
+                api=self.api,
+            )
+            return self._render_course_card(resp, created=False)
+
+        active = _progress.current_teacher()
+        if not active:
+            return display(HTML(
+                '<div style="color: red;">❌ No active lesson. Run '
+                '<code>%cadence_lesson "..."</code> first, or pass <code>--course</code>.</div>'
+            ))
+        try:
+            resp = self.api.set_lesson_retention(active["teacher_token"], args.days)
+        except Exception as e:
+            return display(HTML(f'<div style="color: red;">❌ {e}</div>'))
+        _progress.set_teacher(
+            teacher_token=resp["teacher_token"],
+            lesson_id=resp["id"],
+            lesson_name=resp["name"],
+            join_code=resp["join_code"],
+            api=self.api,
+        )
+        self._render_lesson_card(resp, created=False)
+
     # ------------------------------------------------------------------
     # Student: just-in-time privacy notice (GDPR Article 13)
     # ------------------------------------------------------------------
@@ -1706,7 +1783,7 @@ class CadenceMagic(Magics):
 
     @cell_magic
     def cadence_register_yaml(self, line, cell):
-        """Register many checkpoints at once from a YAML body.
+        """Register many checkpoints at once from an inline YAML body.
 
         Usage:
             %%cadence_register_yaml
@@ -1714,25 +1791,53 @@ class CadenceMagic(Magics):
               comparator: numeric
               expected: {value: 49.5, tolerance: 0.001}
               hint: average of 0..99
-              order: 1
             - id: discovery.higgs-peak
               comparator: exact
               expected: 125
               reveal_after: 3
-              solution_value: '125'
               solution_code: |
                 bin_edges = np.arange(100, 151)
                 counts, _ = np.histogram(m_gg, bins=bin_edges)
                 int(bin_edges[np.argmax(counts)])
               allow_submissions: true
-            - id: discovery.reflect
-              comparator: manual
-              hint: Describe the peak shape.
 
-        Field names mirror the `%cadence_register` flags (snake_case).
+        Field names mirror the `%cadence_register` flags (snake_case). To
+        load from a separate file, use `%cadence_register_yaml_file <path>`.
         """
         if not self._require_api():
             return
+        return self._process_yaml_register(cell)
+
+    @magic_arguments()
+    @argument('path', help='Path to a YAML file containing a list of checkpoint definitions.')
+    @line_magic
+    def cadence_register_yaml_file(self, line):
+        """Register checkpoints from a YAML file on disk.
+
+        Useful when you keep your checkpoint definitions in version control
+        alongside the lesson notebook. The file must contain the same
+        top-level list of mappings %%cadence_register_yaml expects.
+
+        Usage:
+            %cadence_register_yaml_file checkpoints/week3.yaml
+        """
+        if not self._require_api():
+            return
+        args = parse_argstring(self.cadence_register_yaml_file, line)
+        path = args.path.strip().strip('"').strip("'")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                yaml_text = f.read()
+        except OSError as e:
+            return display(HTML(
+                f'<div style="color: red;">❌ Could not read <code>{path}</code>: {e}</div>'
+            ))
+        return self._process_yaml_register(yaml_text)
+
+    def _process_yaml_register(self, yaml_text: str) -> None:
+        """Parse a YAML body (list of checkpoint mappings) and register each
+        entry. Shared by the cell magic (%%cadence_register_yaml) and the
+        file magic (%cadence_register_yaml_file)."""
         teacher = _progress.current_teacher()
         if not teacher:
             return display(HTML(
@@ -1742,14 +1847,14 @@ class CadenceMagic(Magics):
             ))
 
         try:
-            import yaml  # PyYAML is already a Cadence dependency
+            import yaml
         except ImportError:
             return display(HTML(
                 '<div style="color: red;">❌ PyYAML not installed. <code>pip install pyyaml</code>.</div>'
             ))
 
         try:
-            entries = yaml.safe_load(cell) or []
+            entries = yaml.safe_load(yaml_text) or []
         except yaml.YAMLError as e:
             return display(HTML(f'<div style="color: red;">❌ YAML parse error: {e}</div>'))
 
@@ -1814,9 +1919,13 @@ class CadenceMagic(Magics):
             rows += ''.join(
                 f'<li>❌ <code>{cp}</code> — <em>{reason}</em></li>' for cp, reason in failed
             )
+        failed_html = (
+            f', <strong style="color: #b91c1c;">{len(failed)} failed</strong>'
+            if failed else ''
+        )
         display(HTML(
             f'<div>Bulk register: <strong>{len(ok)} registered</strong>'
-            f'{f", <strong style=\"color: #b91c1c;\">{len(failed)} failed</strong>" if failed else ""}.'
+            f'{failed_html}.'
             f'<ul style="margin: 6px 0 0 0; padding-left: 18px;">{rows}</ul></div>'
         ))
 

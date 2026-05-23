@@ -9,11 +9,21 @@ def read_readme():
 setup(
     name="cadence-edu",
     version="0.1.0",
-    author="Cadence Team",
+    author="Liv Vage",
+    author_email="contact@cadence-dash.com",
     description="Cadence — live student progress dashboards for Jupyter teaching",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
+    url="https://cadence-dash.com",
+    project_urls={
+        "Homepage": "https://cadence-dash.com",
+        "Source": "https://github.com/livvage/cadence",
+        "Bug Tracker": "https://github.com/livvage/cadence/issues",
+        "Documentation": "https://cadence-dash.com/guide",
+    },
+    license="MIT",
     packages=find_packages(),
+    include_package_data=True,
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Education",
@@ -26,7 +36,7 @@ setup(
         "Topic :: Education",
         "Framework :: Jupyter",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     install_requires=[
         "jupyter>=1.0.0",
         "notebook>=6.0.0",

@@ -57,7 +57,10 @@ class CadenceAPI:
             student_email: Student email for submissions
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url or os.getenv("CADENCE_API_URL", "http://localhost:8000")
+        # Defaults to the hosted Cadence API so pip-installed users Just Work.
+        # Local devs override via CADENCE_API_URL=http://localhost:8000 (set in
+        # the docker-compose env block for the dev backend).
+        self.base_url = base_url or os.getenv("CADENCE_API_URL", "https://api.cadence-dash.com")
         self.student_name = student_name or os.getenv("CADENCE_STUDENT_NAME", "Anonymous")
         self.student_email = student_email or os.getenv("CADENCE_STUDENT_EMAIL")
         self.timeout = timeout
@@ -459,6 +462,20 @@ class CadenceAPI:
         response = self.session.delete(url, timeout=self.timeout)
         if response.status_code != 404:
             response.raise_for_status()
+
+    def set_lesson_retention(self, teacher_token: str, days: int) -> Dict[str, Any]:
+        return self._make_request(
+            "PATCH",
+            f"/lessons/by-token/{teacher_token}/retention",
+            {"session_retention_days": days},
+        )
+
+    def set_course_retention(self, teacher_token: str, days: int) -> Dict[str, Any]:
+        return self._make_request(
+            "PATCH",
+            f"/courses/by-token/{teacher_token}/retention",
+            {"session_retention_days": days},
+        )
 
     def clone_lesson(
         self,

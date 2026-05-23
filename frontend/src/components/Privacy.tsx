@@ -176,29 +176,29 @@ const Privacy: React.FC = () => {
           <SectionLabel>Your rights</SectionLabel>
           <Stack spacing={1.5}>
             <Typography variant="body2">
-              <strong>Access</strong> (GDPR Article 15) — see your data with{' '}
+              <strong>Access</strong> — see your data with{' '}
               <code>%cadence_my_data</code> in the notebook, or email{' '}
               <Link href={`mailto:${PRIVACY_EMAIL}`}>{PRIVACY_EMAIL}</Link>.
             </Typography>
             <Typography variant="body2">
-              <strong>Portability</strong> (Article 20) — download as JSON with{' '}
+              <strong>Portability</strong> — download as JSON with{' '}
               <code>%cadence_export_my_data</code>.
             </Typography>
             <Typography variant="body2">
-              <strong>Erasure</strong> (Article 17) — delete with{' '}
+              <strong>Erasure</strong> — delete with{' '}
               <code>%cadence_delete_my_data</code>. For requests outside an active notebook,
               your teacher (the controller) is the primary verifier.
             </Typography>
             <Typography variant="body2">
-              <strong>Rectification</strong> (Article 16) — ask your teacher or email{' '}
+              <strong>Rectification</strong> — ask your teacher or email{' '}
               {PRIVACY_EMAIL}.
             </Typography>
             <Typography variant="body2">
-              <strong>Restriction</strong> (Article 18) and <strong>objection</strong>{' '}
-              (Article 21) — email {PRIVACY_EMAIL}.
+              <strong>Restriction</strong> and <strong>objection</strong> —
+              email {PRIVACY_EMAIL}.
             </Typography>
             <Typography variant="body2">
-              <strong>Complaint to a supervisory authority</strong> (Articles 13(2)(d), 77) —
+              <strong>Complaint to a supervisory authority</strong> —
               you can complain to a data protection authority at any time. UK: ICO (ico.org.uk).
               EU: your national DPA. India: Data Protection Board of India.
               US: FERPA complaints go to the US Department of Education Student Privacy Policy Office.

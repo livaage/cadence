@@ -391,6 +391,7 @@ export interface LiveProgress {
   lesson_id: string;
   lesson_name: string;
   join_code: string;
+  session_retention_days: number;
   active_sessions: number;
   summary: LessonSummaryStats;
   checkpoints: CheckpointLiveStats[];
@@ -549,6 +550,7 @@ export interface CourseLive {
   course_id: string;
   course_name: string;
   join_code: string;
+  session_retention_days: number;
   total_enrollments: number;
   not_started: number;
   notebooks: CourseNotebookStat[];

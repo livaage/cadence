@@ -160,47 +160,25 @@ const About: React.FC = () => {
         <Grid item xs={12} md={6}>
           <NotCard
             title="Not a code grader"
-            body={
-              <>
-                We check student-submitted <em>answers</em> against teacher-registered values
-                — we don't run their code. If you need a test runner that imports their
-                solution and asserts against it, look at{' '}
-                <a href="https://otter-grader.readthedocs.io/" target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
-                  Otter-Grader
-                </a>{' '}or{' '}
-                <a href="https://github.com/jupyter/nbgrader" target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
-                  nbgrader
-                </a>.
-              </>
-            }
+            body="We check student-submitted answers against teacher-registered values — we don't run their code. If you need a test runner that imports their solution and asserts against it, use a dedicated grading tool alongside Cadence."
           />
         </Grid>
         <Grid item xs={12} md={6}>
           <NotCard
             title="Not an exam tool"
-            body="No proctoring. No time-locked questions. No randomisation. No identity verification. Cadence is designed for low-stakes practice, not high-stakes assessment. If a student wants to cheat, they can."
+            body="No proctoring. No time-locked questions. No randomisation. No identity verification. Cadence is designed for low-stakes practice, not high-stakes assessment."
           />
         </Grid>
         <Grid item xs={12} md={6}>
           <NotCard
             title="Not an LMS"
-            body="No gradebook export. No enrollment management. No Canvas / Blackboard / Moodle integration. Pair it with whatever LMS your institution already uses."
+            body="No gradebook export. No enrollment management. No LMS integration. Pair it with whatever your institution already uses."
           />
         </Grid>
         <Grid item xs={12} md={6}>
           <NotCard
             title="Not behavioural telemetry"
-            body={
-              <>
-                We capture explicit <code>check()</code> calls (the answers students choose to
-                submit), not every cell they run. If you want cell-execution and
-                error-stream analytics, look at{' '}
-                <a href="https://github.com/chili-epfl/jupyter-analytics" target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
-                  EPFL's Jupyter Analytics
-                </a>
-                {' '}— a different category of tool. They complement, not compete.
-              </>
-            }
+            body="We capture explicit check() calls — the answers students choose to submit — not every cell they run, every error they hit, or how long they paused between actions. If you want that kind of analytics, use a dedicated tool for it; Cadence intentionally doesn't."
           />
         </Grid>
       </Grid>
@@ -210,8 +188,10 @@ const About: React.FC = () => {
           <SectionLabel>Privacy posture</SectionLabel>
           <Stack spacing={1.5}>
             <Typography variant="body2">
-              <Box component="span" sx={{ fontWeight: 600 }}>Student code never leaves their machine.</Box>{' '}
+              <Box component="span" sx={{ fontWeight: 600 }}>Student code stays on the student's machine by default.</Box>{' '}
               They execute their solution locally; Cadence only sees the resulting value they pass to <code>check()</code>.
+              Code only leaves the student's machine when the teacher explicitly opts a checkpoint into
+              code submissions (<code>--allow-submissions</code>) AND the student runs <code>%%cadence_submit</code> for it.
             </Typography>
             <Typography variant="body2">
               <Box component="span" sx={{ fontWeight: 600 }}>Names are pseudonyms by default.</Box>{' '}
@@ -238,7 +218,7 @@ const About: React.FC = () => {
 
       <Divider sx={{ my: 5 }} />
 
-      <Box sx={{ textAlign: 'center' }}>
+      <Box sx={{ textAlign: 'center', mb: 4 }}>
         <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
           Ready to try it?
         </Typography>
@@ -246,6 +226,22 @@ const About: React.FC = () => {
           <Chip component={RouterLink} to="/guide" label="→ Setup guide" clickable color="primary" />
           <Chip component={RouterLink} to="/teacher/library" label="My library" clickable variant="outlined" />
         </Stack>
+      </Box>
+
+      <Divider sx={{ mb: 3 }} />
+
+      <Box sx={{ textAlign: 'center' }}>
+        <Typography variant="body2" color="text.secondary">
+          Questions, feedback, or stuck on something?
+          {' '}
+          <a href="mailto:contact@cadence-dash.com" style={{ color: 'inherit' }}>
+            contact@cadence-dash.com
+          </a>
+          .
+        </Typography>
+        <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 1 }}>
+          Data rights and privacy questions: <a href="mailto:privacy@cadence-dash.com" style={{ color: 'inherit' }}>privacy@cadence-dash.com</a>.
+        </Typography>
       </Box>
     </Box>
   );

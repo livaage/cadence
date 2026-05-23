@@ -1,14 +1,15 @@
 """
-Jupyter Integration for Code Cadence
+Cadence — live student progress dashboards for Jupyter teaching.
 
-This package provides seamless integration between Jupyter notebooks
-and the Code Cadence, allowing students to submit solutions
-directly from their notebooks and teachers to create problem templates.
+A teacher registers checkpoints in their notebook; students submit answers
+from theirs via `check("id", value)`; the teacher watches a real-time
+dashboard. See https://cadence-dash.com for the hosted dashboard and the
+Setup Guide.
 """
 
 __version__ = "0.1.0"
-__author__ = "Code Cadence Team"
-__email__ = "support@competition-platform.com"
+__author__ = "Liv Vage"
+__email__ = "contact@cadence-dash.com"
 
 from .api import CadenceAPI
 from .notebook import ProblemNotebook, create_problem_notebook

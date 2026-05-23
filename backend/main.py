@@ -27,7 +27,7 @@ from schemas import (
     CheckRequest, CheckResponse, CheckpointLiveStats, LiveProgressResponse, LessonSummaryStats,
     CourseCreate, CourseSummary, CoursePublicSummary, CourseAddNotebook,
     CourseLiveResponse, CourseNotebookStat, SetCurrentNotebookRequest,
-    RotateTokenRequest, TimingSample, StudentRosterEntry, StudentCheckpointDetail,
+    RotateTokenRequest, SetRetentionRequest, TimingSample, StudentRosterEntry, StudentCheckpointDetail,
     SolutionResponse, HintResponse, CodeSubmissionRequest, CodeSubmissionEntry,
     HeartbeatResponse, NewActivitySummary, NewActivityEntry, AttemptLogEntry,
     StuckStudent,
@@ -916,6 +916,41 @@ async def lookup_lesson_by_token(teacher_token: str, db: Session = Depends(get_d
     return _require_lesson_by_token(db, teacher_token)
 
 
+@app.patch("/lessons/by-token/{teacher_token}/retention", response_model=LessonSummary)
+async def set_lesson_retention(
+    teacher_token: str,
+    payload: SetRetentionRequest,
+    db: Session = Depends(get_db),
+):
+    """Shorten the session retention for a lesson. Per the design doc, retention
+    is locked at creation — teachers can only SHORTEN it (or delete data
+    early), never extend. Extending would surprise data subjects who relied
+    on the original promise."""
+    lesson = _require_lesson_by_token(db, teacher_token)
+    new_days = payload.session_retention_days
+    if not (1 <= new_days <= 365):
+        raise HTTPException(400, "session_retention_days must be between 1 and 365")
+    if new_days >= lesson.session_retention_days:
+        raise HTTPException(
+            400,
+            f"Retention can only be shortened. Current value is {lesson.session_retention_days} days; "
+            f"you must pass a smaller value (got {new_days}).",
+        )
+    lesson.session_retention_days = new_days
+    log_access(
+        db,
+        action="shorten_lesson_retention",
+        actor_kind="teacher",
+        actor_id=f"token:{teacher_token[:8]}...",
+        target_kind="lesson",
+        target_id=str(lesson.id),
+        details=f"new={new_days}d",
+    )
+    db.commit()
+    db.refresh(lesson)
+    return lesson
+
+
 @app.post("/lessons/by-token/{teacher_token}/rotate", response_model=LessonSummary)
 async def rotate_lesson_token(
     teacher_token: str,
@@ -1138,6 +1173,41 @@ async def list_my_courses(
 @app.get("/courses/by-token/{teacher_token}", response_model=CourseSummary)
 async def lookup_course_by_token(teacher_token: str, db: Session = Depends(get_db)):
     return _require_course_by_token(db, teacher_token)
+
+
+@app.patch("/courses/by-token/{teacher_token}/retention", response_model=CourseSummary)
+async def set_course_retention(
+    teacher_token: str,
+    payload: SetRetentionRequest,
+    db: Session = Depends(get_db),
+):
+    """Shorten the session retention for a course. Same can't-extend rule as
+    lessons — teachers can only reduce retention, never lengthen it after the
+    fact. Affects sessions joined via the course code; attached notebooks
+    keep their own per-lesson retention."""
+    course = _require_course_by_token(db, teacher_token)
+    new_days = payload.session_retention_days
+    if not (1 <= new_days <= 365):
+        raise HTTPException(400, "session_retention_days must be between 1 and 365")
+    if new_days >= course.session_retention_days:
+        raise HTTPException(
+            400,
+            f"Retention can only be shortened. Current value is {course.session_retention_days} days; "
+            f"you must pass a smaller value (got {new_days}).",
+        )
+    course.session_retention_days = new_days
+    log_access(
+        db,
+        action="shorten_course_retention",
+        actor_kind="teacher",
+        actor_id=f"token:{teacher_token[:8]}...",
+        target_kind="course",
+        target_id=str(course.id),
+        details=f"new={new_days}d",
+    )
+    db.commit()
+    db.refresh(course)
+    return course
 
 
 @app.post("/courses/by-token/{teacher_token}/rotate", response_model=CourseSummary)
@@ -1416,6 +1486,7 @@ async def get_course_live(teacher_token: str, db: Session = Depends(get_db)):
         course_id=course_id_str,
         course_name=course.name,
         join_code=course.join_code,
+        session_retention_days=course.session_retention_days,
         total_enrollments=total,
         not_started=not_started,
         notebooks=notebook_stats,
@@ -2486,6 +2557,7 @@ async def get_live_progress(
         lesson_id=lesson_id,
         lesson_name=lesson.name,
         join_code=lesson.join_code,
+        session_retention_days=lesson.session_retention_days,
         active_sessions=len(session_ids),
         summary=summary,
         checkpoints=stats,

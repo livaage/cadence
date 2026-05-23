@@ -1,6 +1,6 @@
 import React from 'react';
 import { Routes, Route, Navigate, Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
-import { Box, AppBar, Toolbar, Container, Stack, Button } from '@mui/material';
+import { Box, AppBar, Toolbar, Container, Stack, Button, Typography, Link as MuiLink } from '@mui/material';
 
 import Welcome from './components/Welcome';
 import LiveProgress from './components/LiveProgress';
@@ -76,12 +76,57 @@ function Navigation() {
   );
 }
 
+function Footer() {
+  return (
+    <Box
+      component="footer"
+      sx={{
+        borderTop: '1px solid',
+        borderColor: 'divider',
+        py: 3,
+        px: 2,
+        mt: 4,
+      }}
+    >
+      <Container maxWidth="lg">
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={{ xs: 1, sm: 3 }}
+          justifyContent="space-between"
+          alignItems={{ xs: 'flex-start', sm: 'center' }}
+        >
+          <Typography variant="caption" color="text.secondary">
+            © Cadence · MIT licensed
+          </Typography>
+          <Stack direction="row" spacing={2.5} flexWrap="wrap" useFlexGap>
+            <MuiLink component={RouterLink} to="/about" variant="caption" color="text.secondary" underline="hover">
+              About
+            </MuiLink>
+            <MuiLink component={RouterLink} to="/guide" variant="caption" color="text.secondary" underline="hover">
+              Guide
+            </MuiLink>
+            <MuiLink component={RouterLink} to="/privacy" variant="caption" color="text.secondary" underline="hover">
+              Privacy
+            </MuiLink>
+            <MuiLink component={RouterLink} to="/terms" variant="caption" color="text.secondary" underline="hover">
+              Terms
+            </MuiLink>
+            <MuiLink href="mailto:contact@cadence-dash.com" variant="caption" color="text.secondary" underline="hover">
+              contact@cadence-dash.com
+            </MuiLink>
+          </Stack>
+        </Stack>
+      </Container>
+    </Box>
+  );
+}
+
 function App() {
   return (
     <AuthProvider>
-      <Box sx={{ flexGrow: 1 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
         <Navigation />
-        <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+        <Container maxWidth="lg" sx={{ mt: 4, mb: 4, flexGrow: 1 }}>
           <Routes>
             <Route path="/" element={<Welcome />} />
             <Route path="/about" element={<About />} />
@@ -98,6 +143,7 @@ function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Container>
+        <Footer />
       </Box>
     </AuthProvider>
   );

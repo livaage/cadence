@@ -252,6 +252,14 @@ export default function CourseOverview() {
               sx={{ fontFamily: '"JetBrains Mono", monospace' }}
             />
             <JoinCodeDisplay joinCode={live.join_code} contextName={live.course_name} />
+            <Tooltip title="Each student session is wiped this many days after the student last touches it. Teachers can shorten (but not extend) via %cadence_set_retention --course in a notebook.">
+              <Chip
+                label={`retention: ${live.session_retention_days}d`}
+                variant="outlined"
+                size="small"
+                sx={{ fontFamily: '"JetBrains Mono", monospace' }}
+              />
+            </Tooltip>
             <Typography variant="caption" color="text.secondary">
               polling every {POLL_MS / 1000}s
             </Typography>

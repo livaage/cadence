@@ -998,6 +998,14 @@ export default function LiveProgress() {
             <Chip label={`join code: ${data.join_code}`} color="primary" variant="outlined" />
             <JoinCodeDisplay joinCode={data.join_code} contextName={data.lesson_name} />
             <Chip label={`${data.active_sessions} sessions`} color="primary" />
+            <Tooltip title="Each student session is wiped this many days after the student last touches it. Teachers can shorten this (but not extend) via %cadence_set_retention in a notebook.">
+              <Chip
+                label={`retention: ${data.session_retention_days}d`}
+                variant="outlined"
+                size="small"
+                sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.72rem' }}
+              />
+            </Tooltip>
             <PollStateChip state={pollState} onResume={handleResume} />
             {courseToken && (
               <Button
