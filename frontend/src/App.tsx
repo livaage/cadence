@@ -8,6 +8,7 @@ import CourseOverview from './components/CourseOverview';
 import Library from './components/Library';
 import Guide from './components/Guide';
 import About from './components/About';
+import Demo from './components/Demo';
 import Privacy from './components/Privacy';
 import Terms from './components/Terms';
 import Logo from './components/Logo';
@@ -52,6 +53,7 @@ function Navigation() {
         <Box sx={{ flexGrow: 1 }} />
         <Stack direction="row" spacing={0.5} alignItems="center">
           {navLink('/about', 'About')}
+          {navLink('/demo', 'Demo')}
           {navLink('/guide', 'Guide')}
           {navLink('/privacy', 'Privacy')}
           {navLink('/terms', 'Terms')}
@@ -130,6 +132,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Welcome />} />
             <Route path="/about" element={<About />} />
+            <Route path="/demo" element={<Demo />} />
             <Route path="/guide" element={<Guide />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 230 100" width="64" height="32" role="img" aria-label="Cadence">
+  <text x="0" y="78" font-family="Inter, system-ui, sans-serif" font-size="78" font-weight="300" fill="#a8a59c">[</text>
+  <line x1="36" y1="28" x2="194" y2="28" stroke="#dedcd1" stroke-width="1.2" />
+  <line x1="36" y1="48" x2="194" y2="48" stroke="#dedcd1" stroke-width="1.2" />
+  <line x1="36" y1="68" x2="194" y2="68" stroke="#dedcd1" stroke-width="1.2" />
+  <circle cx="60"  cy="68" r="7" fill="#F37726" />
+  <circle cx="100" cy="48" r="7" fill="#D17753" />
+  <circle cx="140" cy="48" r="7" fill="#7F9081" />
+  <circle cx="180" cy="28" r="7" fill="#2BA89E" />
+  <text x="200" y="78" font-family="Inter, system-ui, sans-serif" font-size="78" font-weight="300" fill="#a8a59c">]</text>
+</svg>

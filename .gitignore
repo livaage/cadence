@@ -1,5 +1,9 @@
 # Code Competition Platform .gitignore
 
+# Private speaker prep — not for public repo
+docs/conference-talk.md
+
+
 # ===== Python Backend =====
 __pycache__/
 *.py[cod]
@@ -225,7 +229,6 @@ dist
 
 # Gatsby files
 .cache/
-public
 
 # Vuepress build output
 .vuepress/dist
@@ -251,9 +254,6 @@ public
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
-
-# ===== Docker =====
-.dockerignore
 
 # ===== Database =====
 *.db

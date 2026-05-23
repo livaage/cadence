@@ -6,7 +6,7 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 # Baked into the static bundle. Change + rebuild if the backend URL changes.
-ENV REACT_APP_API_URL=https://cadence-backend-118735504228.us-central1.run.app
+ENV REACT_APP_API_URL=https://api.cadence-dash.com
 RUN npm run build
 
 FROM nginx:alpine

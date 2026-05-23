@@ -138,10 +138,16 @@ const Welcome: React.FC = () => {
             variant="outlined"
           />
           <Chip
+            label="See a real lesson"
+            clickable
+            onClick={() => navigate('/demo')}
+            color="primary"
+          />
+          <Chip
             label="Setup guide"
             clickable
             onClick={() => navigate('/guide')}
-            color="primary"
+            variant="outlined"
           />
           <Chip
             label="My library"

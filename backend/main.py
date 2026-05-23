@@ -873,6 +873,20 @@ def _require_lesson_by_token(db: Session, teacher_token: str) -> Lesson:
     return lesson
 
 
+# Lessons + courses whose tokens start with this prefix are the publicly-shared
+# demo dashboards. Anyone with the URL can view, but destructive operations are
+# blocked so a curious visitor can't deface the demo. Re-seed via seed_demo.py.
+DEMO_TOKEN_PREFIX = "demo-"
+
+
+def _assert_not_demo(teacher_token: str) -> None:
+    if teacher_token.startswith(DEMO_TOKEN_PREFIX):
+        raise HTTPException(
+            status_code=403,
+            detail="This is a read-only demo dashboard. Create your own lesson to make changes.",
+        )
+
+
 def _require_lesson_by_code(db: Session, join_code: str) -> Lesson:
     lesson = db.query(Lesson).filter(Lesson.join_code == join_code).first()
     if not lesson:
@@ -958,6 +972,7 @@ async def set_lesson_retention(
     is locked at creation — teachers can only SHORTEN it (or delete data
     early), never extend. Extending would surprise data subjects who relied
     on the original promise."""
+    _assert_not_demo(teacher_token)
     lesson = _require_lesson_by_token(db, teacher_token)
     new_days = payload.session_retention_days
     if not (1 <= new_days <= 365):
@@ -992,6 +1007,7 @@ async def rotate_lesson_token(
     """Mint a fresh teacher_token (and optionally a fresh join_code) for a leaked
     or compromised lesson. The old token authorises the call; after a successful
     response it is dead. Student attempts and registered checkpoints survive."""
+    _assert_not_demo(teacher_token)
     lesson = _require_lesson_by_token(db, teacher_token)
     new_token = secrets.token_urlsafe(24)
     while db.query(Lesson).filter(Lesson.teacher_token == new_token).first():
@@ -1023,6 +1039,7 @@ async def register_checkpoint(
     db: Session = Depends(get_db),
 ):
     """Teacher registers (or updates) the expected answer for a checkpoint."""
+    _assert_not_demo(teacher_token)
     lesson = _require_lesson_by_token(db, teacher_token)
     if payload.comparator not in {"exact", "numeric", "set", "regex", "manual"}:
         raise HTTPException(status_code=400, detail="Invalid comparator")
@@ -1973,6 +1990,7 @@ async def delete_lesson(teacher_token: str, db: Session = Depends(get_db)):
     """Teacher-initiated deletion: wipe a lesson, every session that joined it,
     every attempt, every submission, every solution-reveal. Requires the teacher
     token (the lesson's owner credential)."""
+    _assert_not_demo(teacher_token)
     lesson = _require_lesson_by_token(db, teacher_token)
     lid = str(lesson.id)
 
