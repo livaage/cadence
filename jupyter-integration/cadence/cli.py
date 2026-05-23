@@ -17,7 +17,7 @@ from .api import CadenceAPI
 
 
 @click.group()
-@click.version_option()
+@click.version_option(package_name="cadence-edu")
 def main():
     """Cadence credential helpers (operates on ~/.cadence/lessons.yaml)."""
 
