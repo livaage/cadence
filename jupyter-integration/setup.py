@@ -17,8 +17,8 @@ setup(
     url="https://cadence-dash.com",
     project_urls={
         "Homepage": "https://cadence-dash.com",
-        "Source": "https://github.com/livvage/cadence",
-        "Bug Tracker": "https://github.com/livvage/cadence/issues",
+        "Source": "https://github.com/livaage/cadence",
+        "Bug Tracker": "https://github.com/livaage/cadence/issues",
         "Documentation": "https://cadence-dash.com/guide",
     },
     license="MIT",

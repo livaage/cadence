@@ -44,8 +44,8 @@ const Terms: React.FC = () => {
           <Typography variant="body2">
             Cadence is operated by Liv Vage as an individual, not a company. The source
             code is open source under the MIT License at{' '}
-            <Link href="https://github.com/livvage/cadence" target="_blank" rel="noopener">
-              github.com/livvage/cadence
+            <Link href="https://github.com/livaage/cadence" target="_blank" rel="noopener">
+              github.com/livaage/cadence
             </Link>
             . The hosted service runs on Google Cloud Platform; the privacy notice
             covers data handling in detail.
