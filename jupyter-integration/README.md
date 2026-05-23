@@ -1,117 +1,231 @@
-# Cadence — Jupyter integration
+# Cadence — live student progress dashboards for Jupyter
 
-This integration allows students to submit solutions directly from Jupyter notebooks and teachers to create problem templates with embedded submission capabilities.
+`cadence-edu` is the Jupyter-side half of [Cadence](https://cadence-dash.com): a tiny set of magics and helpers that let a teacher register **checkpoints** in a notebook, students answer them inline from their own notebooks with `check("id", value)`, and a teacher dashboard shows live solve counts, attempts-to-first-correct, and the most common wrong answers in real time.
 
-## 🚀 Quick Start
+No grader. No autograder pipeline. No login required for quick one-off lessons. Just `pip install`, `%load_ext cadence`, and a join code on the projector.
 
-### For Students
+```bash
+pip install cadence-edu
+```
 
-1. **Install the Extension**:
-   ```bash
-   pip install cadence-edu
-   
-   ```
+---
 
-2. **Load a Problem Notebook**:
-   - Teacher provides a `.ipynb` file with problem description
-   - Open in Jupyter Lab or Jupyter Notebook
+## Quickstart (5 minutes)
 
-3. **Write Your Solution**:
-   ```python
-   # This cell will be submitted as your solution
-   def solve_problem(input_data):
-       # Your solution here
-       return result
-   ```
+**Teacher notebook** (run once per lesson, keep it private):
 
-4. **Submit Solution**:
-   - Click the "Submit Solution" button in the toolbar
-   - Or use the cell magic: `%%submit_solution`
+```python
+%load_ext cadence
+%cadence_create_lesson "Fibonacci warm-up"
+# → prints a join code (e.g. soup-river-42) and the dashboard URL
 
-### For Teachers
+%cadence_register fib-10 --comparator numeric --expected '{"value": 55}'
+%cadence_register greet  --comparator exact   --expected '"hello"'
 
-1. **Create Problem Notebooks**:
-   ```python
-   # Use the problem template
-   from cadence import create_problem_notebook
-   
-   notebook = create_problem_notebook(
-       problem_id="hello-world-001",
-       title="Hello World Problem",
-       description="Print 'Hello, World!'",
-       difficulty="Easy"
-   )
-   notebook.save("hello_world_problem.ipynb")
-   ```
+%cadence_self_test            # verifies your expected answers parse correctly
+%cadence_show_join            # big-text join code for the projector
+```
 
-2. **Distribute to Students**:
-   - Share the `.ipynb` file
-   - Students can work in their preferred environment
-   - Solutions are automatically submitted to the platform
+**Student notebook** (distributed to the class — reusable every term):
 
-## 📊 Live Lesson Progress
+```python
+%load_ext cadence
+%cadence_session soup-river-42 "Alice Smith"
 
-A lightweight checkpoint system for tracking how students progress through a notebook in real time. Teachers register expected answers; students call `check("id", value)` in any cell; a teacher dashboard shows per-checkpoint solve counts, an attempts-to-first-correct histogram, and the most common wrong answers.
+from cadence import check
+check("greet", "hello")
+check("fib-10", fib(10))
+```
 
-See the main [README — Live Lesson Progress](../README.md#-live-lesson-progress) for the end-to-end walkthrough. The reference below documents the magics and helpers themselves.
+The teacher's dashboard updates live as students submit. That's the whole product.
 
-### Magic reference
+---
 
-**`%load_ext cadence`** — load the extension. Required before any of the magics below.
+## Concepts
 
-#### Teacher magics
+| Term | What it is |
+|---|---|
+| **Lesson** | One notebook's worth of checkpoints. Created with `%cadence_create_lesson`. Has its own join code + teacher token. Anyone can create one — no account required. |
+| **Course** | A named group of notebook lessons (e.g. "Fall 2026"). Created with `%cadence_create_course`. **Requires `%cadence_login`.** Students join the course with one code, then pick a notebook. |
+| **Checkpoint** | One expected answer in a lesson. Has an ID, a comparator (`exact`/`numeric`/`set`/`regex`/`manual`), an optional hint, and an optional worked solution. Registered with `%cadence_register`. |
+| **Session** | A student's enrollment in a lesson or course. Started with `%cadence_session <code> "<name>"`. |
 
-**`%cadence_create_lesson "<name>" [--code <join-code>]`** — creates a new lesson on the backend and saves the returned `teacher_token` / `join_code` to `~/.cadence/lessons.yaml`. Prints a clickable dashboard URL. Join code is auto-generated (e.g. `soup-river-42`) unless `--code` is supplied.
+---
 
-**`%cadence_lesson "<name>"`** — activates a previously-created lesson for this kernel. Reads the cached `teacher_token` and verifies it against the backend. Use at the top of every teacher notebook.
+## Teacher workflow
 
-**`%cadence_register <checkpoint_id> --comparator <type> --expected <json> [--hint <str>] [--order <int>]`** — registers (or updates) the expected answer for a checkpoint in the active lesson. Idempotent — re-running with the same `<checkpoint_id>` replaces the existing record.
+### Creating a single lesson (no account needed)
 
-Comparators and their `--expected` formats:
+```python
+%load_ext cadence
+%cadence_create_lesson "Week 3: Fibonacci"
+```
 
-| Comparator | `--expected` shape | Match rule |
+The first run creates the lesson and caches the teacher token in `~/.cadence/lessons.yaml`. Re-running with the same name reactivates the cached lesson — safe to run at the top of every notebook session. Use `--force` if you genuinely want a second lesson with the same name (different token, different join code).
+
+### Creating a course of lessons (account required)
+
+```python
+%load_ext cadence
+%cadence_login                    # prompts for username + password
+                                  # or: %cadence_login --token <jwt>
+%cadence_whoami                   # confirm who's logged in
+                                  # %cadence_logout clears the cached JWT
+
+%cadence_create_course "Fall 2026 Statistics"
+%cadence_add_notebook "Week 1 — Variables"
+%cadence_add_notebook "Week 2 — Distributions"
+```
+
+`%cadence_add_notebook` creates a brand-new lesson *inside* the active course. To pull in a lesson you already created standalone, use `%cadence_attach_lesson "My Lesson" --to "Fall 2026 Statistics"`.
+
+The first lesson or course creation prompts inline to accept the Terms of Service; if you'd rather accept up front in a script, run `%cadence_accept_terms` first.
+
+### Registering checkpoints
+
+```python
+%cadence_register fib-10 \
+    --comparator numeric \
+    --expected '{"value": 55, "tolerance": 0.001}' \
+    --hint "Remember: fib(0)=0, fib(1)=1." \
+    --order 2
+```
+
+Comparators and the `--expected` shape they take:
+
+| Comparator | `--expected` | Match rule |
 |---|---|---|
 | `exact` | `'"hello"'` or `'{"value": "hello"}'` | `str(submitted).strip() == str(value).strip()` |
 | `numeric` | `'{"value": 55}'` or `'{"value": 3.14, "tolerance": 0.001}'` | `abs(submitted - value) <= tolerance` |
 | `set` | `'{"value": [1, 2, 3]}'` | `set(submitted) == set(value)` (order-independent) |
 | `regex` | `'{"pattern": "^[A-Z].*"}'` | `re.match(pattern, str(submitted))` |
+| `manual` | (none) | Student self-attests with `mark_done("id")` |
 
-Submitted values from `check()` are JSON-encoded before transport, so lists, dicts, numbers, and strings all round-trip correctly.
+Re-running `%cadence_register` with the same ID updates the checkpoint in place.
 
-**`%cadence_self_test`** — submits every registered checkpoint's own `expected_payload` back to the server and prints a pass/fail table. Run this after `%cadence_register` calls to verify the answers evaluate as you expect. Regex checkpoints are skipped (can't auto-synthesize a matching string).
-
-**`%cadence_create_course "<name>" [--code <join-code>]`** — creates a **course** (a named group of notebooks) on the backend and caches its teacher_token / join_code under `courses/<name>` in `~/.cadence/lessons.yaml`. Prints a clickable course-overview dashboard URL.
-
-**`%cadence_course "<name>"`** — activates a previously-created course for this kernel.
-
-**`%cadence_add_notebook "<name>" [--code <join-code>] [--order <int>]`** — creates a new notebook **inside the active course** and attaches it. Equivalent to `%cadence_create_lesson` + an attach-to-course step. The new notebook is also activated for subsequent `%cadence_register` calls.
-
-**`%cadence_rotate_token [--course] [--also-join-code]`** — mint a fresh `teacher_token` for the currently active lesson (or course with `--course`). The old token is revoked server-side and the local `~/.cadence/lessons.yaml` is updated in place. By default the `join_code` is preserved so existing student notebooks keep working; pass `--also-join-code` for a hard revocation that re-issues the join code too.
-
-### Managing cached credentials from the shell
-
-```bash
-cadence-cli lessons list                              # every cached lesson + course, tokens masked
-cadence-cli lessons forget "Week 3: Fibonacci"        # drop a stale row when the server-side lesson is gone
-cadence-cli lessons rotate "Week 3: Fibonacci"        # mint a new teacher_token, keep the join_code
-cadence-cli lessons rotate "Spring 2026" --also-join-code   # full revocation incl. join code
-```
-
-`forget` only touches the local YAML file; nothing is sent over the network. `rotate` calls the backend and updates the cache in place. Both are scoped to a single entry; pass `--yes` to `forget` to skip the confirmation prompt.
-
-#### Student magics
-
-**`%cadence_session <join_code> "<display name>"`** — joins either a **standalone notebook** or a **course** as a student. The server looks up the code on both sides and dispatches accordingly.
+**Bulk registration** for big lessons — drop a whole YAML body into one cell:
 
 ```python
+%%cadence_register_yaml
+- id: setup.mean-value
+  comparator: numeric
+  expected: {value: 49.5, tolerance: 0.001}
+  hint: average of 0..99
+- id: discovery.higgs-peak
+  comparator: exact
+  expected: 125
+  reveal_after: 3
+  solution_code: |
+    bin_edges = np.arange(100, 151)
+    counts, _ = np.histogram(m_gg, bins=bin_edges)
+    int(bin_edges[np.argmax(counts)])
+  allow_submissions: true
+```
+
+Or keep the YAML in version control alongside your notebook and load it:
+
+```python
+%cadence_register_yaml_file checkpoints/week3.yaml
+```
+
+### Verifying before class
+
+```python
+%cadence_self_test
+```
+
+Submits each checkpoint's own expected answer and prints a pass/fail table. Catches typos in `--expected` and bad tolerance bounds. Regex checkpoints are skipped (can't auto-synthesize a matching string).
+
+### Displaying the join code
+
+```python
+%cadence_show_join
+```
+
+Big-text rendering of the active lesson or course's join code — designed for projector / screen share.
+
+### Managing existing lessons and courses
+
+```python
+%cadence_lesson "Week 3: Fibonacci"           # reactivate a cached lesson
+%cadence_course "Fall 2026 Statistics"        # reactivate a cached course
+
+%cadence_clone_lesson "Fall 2026 Week 3" --as "Spring 2027 Week 3"
+                                              # duplicate (fresh code + token)
+
+%cadence_attach_lesson "Lab 1" --to "Fall 2026 Statistics"
+%cadence_detach_lesson "Lab 1" --from "Fall 2026 Statistics"
+
+%cadence_delete_lesson "Old test lesson" --yes    # wipes the lesson + ALL student data
+%cadence_delete_course "Fall 2025" --yes          # wipes the course; attached lessons survive
+```
+
+### Rotating a leaked teacher token
+
+```python
+%cadence_rotate_token                         # mints a fresh teacher_token
+%cadence_rotate_token --also-join-code        # full revocation: also reissues the join code
+                                              # (existing student notebooks break)
+%cadence_rotate_token --course                # rotate the active course's token
+```
+
+The local `~/.cadence/lessons.yaml` is updated in place and a fresh dashboard URL is printed.
+
+### Code submissions (optional)
+
+For checkpoints registered with `--allow-submissions`, students can use `%%cadence_submit <id>` to send the cell's *source code* to your dashboard for review:
+
+```python
+%%cadence_submit fib-recursive
+def fib(n):
+    return n if n <= 1 else fib(n-1) + fib(n-2)
+fib(10)
+```
+
+The cell still runs normally — the student sees their output. The source is sent alongside.
+
+### Retention controls
+
+```python
+%cadence_set_retention --days 30              # active lesson
+%cadence_set_retention --days 90 --course     # active course
+```
+
+Retention can only be **shortened**, never extended. To lengthen it you'd clone the lesson and migrate fresh students over — a design constraint, not a bug.
+
+---
+
+## Student workflow
+
+### Joining
+
+```python
+%load_ext cadence
 %cadence_session soup-river-42 "Alice Smith"
 ```
 
-If the code belonged to a course, the magic prints the list of notebooks and reminds the student to pick one with `%cadence_notebook`.
+If the join code belongs to a **course**, the magic prints the list of notebooks and reminds you to pick one:
 
-**`%cadence_notebook "<notebook name>"`** — student-side, course enrollments only. Signals which notebook inside the course the student is currently working on. This drives the "students on each notebook" breakdown in the course dashboard. It does **not** restrict which `check(...)` calls work — attempts are always recorded under the notebook that owns the checkpoint, regardless of which notebook the student last switched to.
+```python
+%cadence_notebook "Week 1 — Variables"
+```
 
-**`%%cadence_time <checkpoint_id>`** — cell magic that executes the cell, measures wall-clock time, and submits the value of the last expression as the answer. The elapsed time is recorded on the attempt and contributes to the teacher's timing histogram. Example:
+### Answering checkpoints
+
+```python
+from cadence import check, show_hint, show_solution, mark_done, submit_image
+
+result = check("fib-10", fib(10))       # returns a CheckResult
+# result.is_correct, result.attempt_num, result.hint
+# Also renders in the cell as a coloured ✅/❌ chip.
+
+show_hint("fib-10")                     # fetches the teacher's hint
+show_solution("fib-10")                 # fetches the worked solution if revealed
+mark_done("manual-checkpoint")          # self-attest a manual checkpoint
+submit_image("plot-1", fig)             # for `--allow-submissions` image checkpoints
+```
+
+### Timed answers
 
 ```python
 %%cadence_time fib-10
@@ -120,360 +234,102 @@ def fib(n):
 fib(10)
 ```
 
-If the cell raises, nothing is submitted and the exception is re-raised for normal Jupyter debugging. If the cell produces no expression value on the final line (all statements), a warning is shown and nothing is submitted. Only the **first correct** attempt's time contributes to the dashboard histogram, so re-running a known-good cell doesn't pollute the stats.
+Measures wall-clock time and submits the last-expression value as the answer. Only the **first correct** attempt's time contributes to the dashboard histogram, so re-running a known-good cell doesn't pollute the stats. If the cell raises, nothing is submitted.
 
-### Python helpers
+### Your data rights (GDPR)
 
-```python
-from cadence import check, current_session, CheckResult
-```
-
-**`check(checkpoint_id: str, value) -> CheckResult`** — submits `value` for the named checkpoint in the currently active session. Returns a `CheckResult` with:
-
-- `.is_correct: bool` (also truthy/falsy — `if check(...):` works)
-- `.attempt_num: int` (1, 2, 3, … — counted server-side)
-- `.hint: Optional[str]` (the teacher's hint, only on incorrect answers)
-
-In a notebook cell, `CheckResult` renders as a colored ✅/❌ message with the attempt number.
-
-**`current_session() -> Optional[dict]`** — returns `{"session_id", "lesson_id", "display_name", "api"}` if `%cadence_session` has been run, else `None`. Useful for debugging.
-
-### Typical notebook layout
-
-**Teacher setup notebook** (kept private — run once when preparing the lesson):
+`cadence-edu` ships explicit support for the three Article-15/17/20 rights:
 
 ```python
-%load_ext cadence
-
-%cadence_create_lesson "Week 3: Fibonacci"
-# prints the join code (e.g. soup-river-42) and dashboard URL
-
-%cadence_register warm-up --order 1 \
-    --comparator exact --expected '"hello"'
-%cadence_register fib-10 --order 2 \
-    --comparator numeric --expected '{"value": 55}'
-%cadence_register sorted --order 3 \
-    --comparator set --expected '{"value": [1,2,3,4,5]}' \
-    --hint "Order does not matter."
-
-%cadence_self_test   # verify every checkpoint evaluates correctly
+%cadence_my_data                # Article 15 — see everything stored about this session
+%cadence_export_my_data         # Article 20 — dump it as JSON
+%cadence_export_my_data --path ~/my-cadence-data.json
+%cadence_delete_my_data --yes   # Article 17 — wipe attempts, submissions, the session itself
 ```
 
-Later, to reopen the lesson (or add more checkpoints):
+`%cadence_delete_my_data` cannot be undone and clears the active session from the kernel afterwards.
 
-```python
-%load_ext cadence
-%cadence_lesson "Week 3: Fibonacci"
-```
+---
 
-**Student notebook** (distributed to the class — reusable every term):
+## CLI helpers
 
-```python
-%load_ext cadence
-%cadence_session soup-river-42 "Your Name"
+The package also installs a `cadence-cli` for managing locally-cached teacher credentials from the shell — useful when the server-side lesson has been deleted but the local YAML is stale, or when you suspect a token leak:
 
-from cadence import check
-```
-
-…then later in the notebook:
-
-```python
-check("warm-up", greeting)
-check("fib-10", fib(10))
-check("sorted", sorted_unique(values))
-```
-
-## 📋 Features
-
-### Student Features
-- ✅ **Cell-based Submission**: Mark specific cells as solutions
-- ✅ **Inline Testing**: Test your code before submission
-- ✅ **Real-time Feedback**: See results immediately
-- ✅ **Multiple Languages**: Python, C++, and more
-- ✅ **Offline Work**: Work without internet, submit when ready
-
-### Teacher Features
-- ✅ **Problem Templates**: Create standardized problem notebooks
-- ✅ **Embedded Metadata**: Store problem info in notebook
-- ✅ **Auto-grading**: Automatic evaluation of submissions
-- ✅ **Progress Tracking**: Monitor student progress
-- ✅ **Batch Operations**: Grade multiple submissions
-
-## 🔧 Installation
-
-### Option 1: Pip Installation
 ```bash
-pip install cadence-edu
-
+cadence-cli lessons list                              # every cached lesson + course, tokens masked
+cadence-cli lessons forget "Week 3: Fibonacci"        # drop a stale row (local only)
+cadence-cli lessons forget "Week 3: Fibonacci" --yes  # skip the confirmation prompt
+cadence-cli lessons rotate "Week 3: Fibonacci"        # mint a new teacher_token
+cadence-cli lessons rotate "Spring 2026" --also-join-code   # full revocation
 ```
 
-### Option 2: Development Installation
+`forget` only touches the local YAML. `rotate` calls the backend and updates the cache in place.
+
+---
+
+## Configuration
+
+### Files
+
+| Path | What it holds |
+|---|---|
+| `~/.cadence/lessons.yaml` | Cached teacher tokens + join codes for lessons and courses (mode `0600`) |
+| `~/.cadence/credentials.yaml` | Teacher JWT from `%cadence_login` (mode `0600`) |
+| `~/.cadence/terms.yaml` | Recorded ToS acceptance from `%cadence_accept_terms` |
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CADENCE_API_URL` | `https://api.cadence-dash.com` | Backend API base URL. Set to `http://localhost:8000` for local dev. |
+| `CADENCE_DASHBOARD_URL` | (falls back to `CADENCE_WEB_URL`, then `http://localhost:3000`) | Where the teacher dashboard lives. Used to build the URLs printed by create-lesson. |
+| `CADENCE_WEB_URL` | `https://cadence-dash.com` | Public web URL — used for legal-page links. |
+
+For self-hosted setups, set `CADENCE_API_URL` + `CADENCE_DASHBOARD_URL` to your own deployment.
+
+---
+
+## Troubleshooting
+
+**"API not available" / SSL errors on first magic.** The package defaults to the hosted backend at `api.cadence-dash.com`. If you're running locally, point it at your own instance:
+
 ```bash
-git clone <repository-url>
-cd jupyter-integration
-pip install -e .
-
-
+export CADENCE_API_URL=http://localhost:8000
+export CADENCE_DASHBOARD_URL=http://localhost:3000
 ```
 
-## 📖 Usage Examples
+**Extension didn't load.** Confirm the install with:
 
-### Student Workflow
-
-#### 1. Basic Submission
-```python
-# This cell will be submitted
-def fibonacci(n):
-    if n <= 1:
-        return n
-    return fibonacci(n-1) + fibonacci(n-2)
-
-# Test your solution
-print(fibonacci(10))  # Should print 55
-```
-
-#### 2. Using Cell Magic
-```python
-%%submit_solution
-# This entire cell will be submitted
-def solve_problem():
-    n = int(input())
-    return n * 2
-```
-
-#### 3. Multiple Solutions
-```python
-# Solution 1: Iterative approach
-def iterative_fibonacci(n):
-    a, b = 0, 1
-    for _ in range(n):
-        a, b = b, a + b
-    return a
-
-# Solution 2: Recursive approach  
-def recursive_fibonacci(n):
-    if n <= 1:
-        return n
-    return recursive_fibonacci(n-1) + recursive_fibonacci(n-2)
-```
-
-### Teacher Workflow
-
-#### 1. Create Problem Template
-```python
-from cadence import ProblemNotebook
-
-notebook = ProblemNotebook(
-    problem_id="fibonacci-001",
-    title="Fibonacci Sequence",
-    description="""
-    Write a function that returns the nth Fibonacci number.
-    
-    Input: An integer n (0 ≤ n ≤ 45)
-    Output: The nth Fibonacci number
-    
-    Example:
-    Input: 10
-    Output: 55
-    """,
-    difficulty="Medium",
-    time_limit=30,
-    memory_limit=512,
-    test_cases=[
-        {"input": "0", "output": "0", "points": 1},
-        {"input": "1", "output": "1", "points": 1},
-        {"input": "10", "output": "55", "points": 2},
-        {"input": "20", "output": "6765", "points": 3},
-    ]
-)
-
-notebook.save("fibonacci_problem.ipynb")
-```
-
-#### 2. Add Custom Test Cases
-```python
-# Add hidden test cases
-notebook.add_test_case(
-    input_data="45",
-    expected_output="1134903170",
-    is_hidden=True,
-    points=5
-)
-```
-
-## 🔌 API Integration
-
-### Direct API Calls
-```python
-from cadence import CadenceAPI
-
-api = CadenceAPI(
-    base_url="http://localhost:8000",
-    student_name="John Doe",
-    student_email="john@example.com"
-)
-
-# Submit solution
-response = api.submit_solution(
-    problem_id="fibonacci-001",
-    source_code="def fib(n): return n if n <= 1 else fib(n-1) + fib(n-2)",
-    language="python"
-)
-
-print(f"Score: {response.total_score}/{response.total_points}")
-```
-
-### Batch Submission
-```python
-# Submit multiple solutions
-solutions = [
-    ("fibonacci-001", "def fib(n): return n if n <= 1 else fib(n-1) + fib(n-2)"),
-    ("hello-world-001", "print('Hello, World!')"),
-]
-
-for problem_id, code in solutions:
-    result = api.submit_solution(problem_id, code, "python")
-    print(f"{problem_id}: {result.total_score}/{result.total_points}")
-```
-
-## 🎨 Customization
-
-### Custom Cell Markers
-```python
-# Use custom markers for solution cells
-%%solution fibonacci-001
-def fibonacci(n):
-    return n if n <= 1 else fibonacci(n-1) + fibonacci(n-2)
-```
-
-### Custom Submission Hooks
-```python
-# Pre-submission validation
-def validate_solution(code):
-    if "import os" in code:
-        raise ValueError("OS module not allowed")
-    return True
-
-# Register validation
-api.register_validation_hook(validate_solution)
-```
-
-## 🔒 Security Features
-
-- **Code Validation**: Prevent dangerous imports
-- **Resource Limits**: Enforce time and memory limits
-- **Sandboxed Execution**: Run code in isolated containers
-- **Input Sanitization**: Validate all inputs
-
-## 📊 Analytics
-
-### Student Analytics
-- Submission history
-- Performance trends
-- Problem completion rates
-- Time spent on problems
-
-### Teacher Analytics
-- Class performance overview
-- Problem difficulty analysis
-- Common error patterns
-- Student progress tracking
-
-## 🛠️ Configuration
-
-### Environment Variables
 ```bash
-export CADENCE_API_URL="http://localhost:8000"
-export CADENCE_STUDENT_NAME="John Doe"
-export CADENCE_STUDENT_EMAIL="john@example.com"
+jupyter server extension list           # Notebook 7 / JupyterLab
 ```
 
-### Configuration File
-```yaml
-# ~/.cadence/config.yaml
-api:
-  base_url: "http://localhost:8000"
-  timeout: 30
+Then re-run `%load_ext cadence` in the kernel.
 
-student:
-  name: "John Doe"
-  email: "john@example.com"
+**Stale cached lesson.** If you `docker compose down -v`'d your local backend, your `~/.cadence/lessons.yaml` will reference lessons that no longer exist. Drop them with `cadence-cli lessons forget "<name>"`.
 
-submission:
-  auto_submit: false
-  validate_before_submit: true
-  max_retries: 3
-```
+**Teacher token leaked.** `%cadence_rotate_token` mints a new one and invalidates the old. Add `--also-join-code` if you also need to lock out existing students.
 
-## 🐛 Troubleshooting
+---
 
-### Common Issues
+## Other primitives
 
-1. **Extension Not Loading**:
-   ```bash
-   jupyter nbextension list
-   
-   ```
+A few legacy helpers are still exposed for the original code-submission flow:
 
-2. **API Connection Issues**:
-   ```python
-   # Check API status
-   from cadence import CadenceAPI
-   api = CadenceAPI()
-   print(api.status())
-   ```
+- `CadenceAPI` — direct API client (`from cadence import CadenceAPI`)
+- `ProblemNotebook` / `create_problem_notebook` — pre-formatted problem-notebook templates with embedded metadata and test cases
 
-3. **Submission Failures**:
-   ```python
-   # Enable debug mode
-   import logging
-   logging.basicConfig(level=logging.DEBUG)
-   ```
+These predate the live-progress flow and aren't on the happy path; use them only if you're integrating with an external grader.
 
-## 📚 Advanced Usage
+---
 
-### Custom Problem Types
-```python
-class CustomProblem(ProblemNotebook):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.custom_validator = self.validate_custom
-    
-    def validate_custom(self, code):
-        # Custom validation logic
-        pass
-```
+## Links
 
-### Integration with Other Tools
-```python
-# Integration with nbgrader
-from nbgrader import Gradebook
-from cadence import CadenceAPI
+- **Hosted dashboard & docs:** https://cadence-dash.com
+- **Setup guide:** https://cadence-dash.com/guide
+- **Source:** https://github.com/livaage/cadence
+- **Issues:** https://github.com/livaage/cadence/issues
 
-# Sync grades
-api = CadenceAPI()
-gradebook = Gradebook("sqlite:///gradebook.db")
+## License
 
-for assignment in gradebook.assignments:
-    for submission in assignment.submissions:
-        api.sync_grade(assignment.name, submission.student_id, submission.score)
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
-
-## 📄 License
-
-MIT License - see LICENSE file for details.
-
-## 🆘 Support
-
-- **Documentation**: [Link to docs]
-- **Issues**: [GitHub Issues]
-- **Discussions**: [GitHub Discussions]
-- **Email**: support@cadence.example 
+MIT — see [LICENSE](LICENSE).
