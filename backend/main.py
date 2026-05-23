@@ -20,6 +20,7 @@ from schemas import (
     Problem as ProblemSchema, ProblemCreate, TestCase as TestCaseSchema,
     Submission as SubmissionSchema, SubmissionCreate, TestResult as TestResultSchema,
     SubmissionResponse, ProblemStats, SubmissionWithResults, Token, TeacherCreate, Teacher as TeacherSchema,
+    SetPasswordRequest,
     GitHubRepo as GitHubRepoSchema, GitHubRepoCreate, StudentCommit as StudentCommitSchema,
     GitHubSyncRequest, GitHubSyncResponse, StudentCommitWithResults,
     LessonCreate, LessonSummary, LessonPublicSummary, CheckpointSummary,
@@ -346,6 +347,37 @@ async def whoami(current_teacher: Teacher = Depends(get_current_teacher)):
     """Return the authenticated teacher. Used by the frontend to check
     whether the stored JWT is still valid and to render the user menu."""
     return current_teacher
+
+
+@app.post("/auth/me/password", status_code=204)
+async def set_my_password(
+    payload: SetPasswordRequest,
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """Set or change the teacher's local password.
+
+    OAuth-only accounts (created via GitHub login) have password_hash = NULL.
+    Calling this with no current_password sets the first password. Calling it
+    when a password already exists requires current_password for verification.
+
+    The same flow lets a teacher use `%cadence_login --username X --password Y`
+    from Jupyter instead of pasting a JWT, so OAuth users have a uniform login
+    path with password-signup users."""
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    if current_teacher.password_hash is not None:
+        # Existing password — require the old one to confirm the request is
+        # coming from the legitimate user (not a stolen JWT).
+        if not payload.current_password or not verify_password(
+            payload.current_password, current_teacher.password_hash
+        ):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    current_teacher.password_hash = get_password_hash(payload.new_password)
+    db.commit()
+    return None
 
 
 @app.delete("/auth/me", status_code=204)

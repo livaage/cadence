@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Alert, Box, CircularProgress, Stack, Typography } from '@mui/material';
 import { useAuth } from '../contexts/AuthContext';
-import { formatApiError } from '../services/api';
+import { formatApiError, whoami } from '../services/api';
 
 const AuthCallback: React.FC = () => {
   const navigate = useNavigate();
@@ -22,7 +22,21 @@ const AuthCallback: React.FC = () => {
     // Wipe the fragment so the JWT doesn't sit in the browser's URL bar.
     window.history.replaceState(null, '', window.location.pathname);
     signIn(token)
-      .then(() => navigate('/teacher/library', { replace: true }))
+      .then(async () => {
+        // If this is an OAuth-only account (no local password yet), land on
+        // the Account page so the user can set one — Jupyter's %cadence_login
+        // is much smoother with a password than with a pasted JWT.
+        try {
+          const me = await whoami();
+          if (!me.has_password) {
+            navigate('/teacher/account?prompt=password', { replace: true });
+            return;
+          }
+        } catch {
+          // Fall through to library — non-blocking.
+        }
+        navigate('/teacher/library', { replace: true });
+      })
       .catch((err) => setError(formatApiError(err, 'Could not validate your sign-in. Please try again.')));
   }, [navigate, signIn]);
 

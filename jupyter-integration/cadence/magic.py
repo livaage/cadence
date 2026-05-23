@@ -373,16 +373,13 @@ class CadenceMagic(Magics):
                 <div style="font-weight: 600; color: #1e40af; margin-bottom: 6px;">
                     Logging in to Cadence
                 </div>
-                <div style="margin-bottom: 8px;">
-                    <strong>Signed up with GitHub?</strong> You don't have a password.
-                    Interrupt this cell (■ stop button), then run:
-                    <pre style="background:#fff; padding:6px; border-radius:4px; margin:4px 0;">%cadence_login --token YOUR_JWT</pre>
-                    Get your JWT: sign in at <a href="{web_url}" target="_blank">{web_url}</a>,
-                    open browser DevTools → Console, and paste:
-                    <pre style="background:#fff; padding:6px; border-radius:4px; margin:4px 0;">localStorage.getItem('token')</pre>
-                </div>
                 <div>
-                    <strong>Have a username + password?</strong> Continue with the prompts below.
+                    <strong>Signed up with GitHub?</strong> You haven't set a
+                    Jupyter password yet. Go to
+                    <a href="{web_url.rstrip('/')}/teacher/account?prompt=password" target="_blank">
+                        {web_url.rstrip('/')}/teacher/account</a>
+                    and set one — then come back here and enter your username +
+                    that password below.
                 </div>
             </div>
         '''))

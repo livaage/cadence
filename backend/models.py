@@ -102,6 +102,11 @@ class Teacher(Base):
     accepted_terms_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    @property
+    def has_password(self) -> bool:
+        return self.password_hash is not None
+
+
 class GitHubRepo(Base):
     __tablename__ = "github_repos"
     

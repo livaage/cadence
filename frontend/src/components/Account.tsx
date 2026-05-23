@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -12,23 +12,74 @@ import {
   DialogContentText,
   DialogTitle,
   Stack,
+  TextField,
   Typography,
 } from '@mui/material';
 import { useAuth } from '../contexts/AuthContext';
-import { closeMyAccount, formatApiError } from '../services/api';
+import { closeMyAccount, setMyPassword, formatApiError } from '../services/api';
 
 const Account: React.FC = () => {
   const navigate = useNavigate();
-  const { teacher, loading, signOut } = useAuth();
+  const [searchParams] = useSearchParams();
+  const { teacher, loading, signOut, refresh } = useAuth();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Password form state.
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSuccess, setPwSuccess] = useState<string | null>(null);
+  const [pwSubmitting, setPwSubmitting] = useState(false);
+  const passwordCardRef = useRef<HTMLDivElement>(null);
+
+  // After GitHub OAuth signup, AuthCallback bounces here with ?prompt=password.
+  // Scroll the password card into view + highlight it so the user notices.
+  const shouldPrompt = searchParams.get('prompt') === 'password';
+  useEffect(() => {
+    if (shouldPrompt && passwordCardRef.current) {
+      passwordCardRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [shouldPrompt]);
 
   if (loading) return null;
   if (!teacher) {
     navigate('/login', { replace: true });
     return null;
   }
+
+  const handleSetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwError(null);
+    setPwSuccess(null);
+    if (newPassword.length < 8) {
+      setPwError('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== newPasswordConfirm) {
+      setPwError('Passwords do not match.');
+      return;
+    }
+    setPwSubmitting(true);
+    try {
+      await setMyPassword(newPassword, teacher.has_password ? currentPassword : null);
+      await refresh();
+      setCurrentPassword('');
+      setNewPassword('');
+      setNewPasswordConfirm('');
+      setPwSuccess(
+        teacher.has_password
+          ? 'Password updated. You can keep using %cadence_login from Jupyter.'
+          : `Password set! Log in from Jupyter with: %cadence_login --username ${teacher.username}`,
+      );
+    } catch (err: any) {
+      setPwError(formatApiError(err, 'Could not set password. Try again.'));
+    } finally {
+      setPwSubmitting(false);
+    }
+  };
 
   const handleClose = async () => {
     setError(null);
@@ -65,6 +116,79 @@ const Account: React.FC = () => {
               <em>Member since {new Date(teacher.created_at).toLocaleDateString()}</em>
             </Typography>
           </Stack>
+        </CardContent>
+      </Card>
+
+      <Card
+        ref={passwordCardRef}
+        sx={{
+          mb: 3,
+          ...(shouldPrompt && !teacher.has_password
+            ? { borderColor: 'primary.main', borderWidth: 2, borderStyle: 'solid', bgcolor: 'primary.50' }
+            : {}),
+        }}
+      >
+        <CardContent sx={{ p: 3 }}>
+          <Typography variant="subtitle1" sx={{ mb: 0.5, fontWeight: 600 }}>
+            {teacher.has_password ? 'Change password' : 'Set a password for Jupyter login'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            {teacher.has_password
+              ? 'Updates the password you use with %cadence_login from Jupyter.'
+              : `You signed up with GitHub, so you don't have a password yet. Set one here and you can log in from Jupyter with %cadence_login --username ${teacher.username}.`}
+          </Typography>
+          <Box component="form" onSubmit={handleSetPassword}>
+            <Stack spacing={2}>
+              {teacher.has_password && (
+                <TextField
+                  type="password"
+                  label="Current password"
+                  size="small"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  autoComplete="current-password"
+                  required
+                  fullWidth
+                />
+              )}
+              <TextField
+                type="password"
+                label="New password (8+ characters)"
+                size="small"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                autoComplete="new-password"
+                required
+                fullWidth
+              />
+              <TextField
+                type="password"
+                label="Confirm new password"
+                size="small"
+                value={newPasswordConfirm}
+                onChange={(e) => setNewPasswordConfirm(e.target.value)}
+                autoComplete="new-password"
+                required
+                fullWidth
+              />
+              {pwError && <Alert severity="error">{pwError}</Alert>}
+              {pwSuccess && <Alert severity="success">{pwSuccess}</Alert>}
+              <Box>
+                <Button
+                  type="submit"
+                  variant="contained"
+                  disabled={pwSubmitting}
+                  sx={{ textTransform: 'none' }}
+                >
+                  {pwSubmitting
+                    ? 'Saving…'
+                    : teacher.has_password
+                    ? 'Update password'
+                    : 'Set password'}
+                </Button>
+              </Box>
+            </Stack>
+          </Box>
         </CardContent>
       </Card>
 

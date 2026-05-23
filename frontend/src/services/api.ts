@@ -181,7 +181,20 @@ export interface TeacherProfile {
   email: string;
   is_active: boolean;
   created_at: string;
+  // True if the teacher has a local password set (i.e. can log in via
+  // username + password from Jupyter). False for OAuth-only accounts.
+  has_password: boolean;
 }
+
+export const setMyPassword = async (
+  newPassword: string,
+  currentPassword: string | null,
+): Promise<void> => {
+  await api.post('/auth/me/password', {
+    new_password: newPassword,
+    current_password: currentPassword,
+  });
+};
 
 export const loginTeacher = async (username: string, password: string): Promise<{ access_token: string; token_type: string }> => {
   const formData = new FormData();

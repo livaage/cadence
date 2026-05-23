@@ -101,9 +101,21 @@ class Teacher(TeacherBase):
     is_active: bool
     created_at: datetime
     accepted_terms_at: Optional[datetime] = None
+    # True if the teacher has a local password set (can log in via username +
+    # password from Jupyter or the web form). False for OAuth-only accounts —
+    # the UI uses this to prompt them to set one.
+    has_password: bool = False
 
     class Config:
         from_attributes = True
+
+
+class SetPasswordRequest(BaseModel):
+    # Required when changing an existing password; omitted when setting one
+    # for the first time on an OAuth-only account.
+    current_password: Optional[str] = None
+    new_password: str
+
 
 # Authentication schemas
 class Token(BaseModel):
