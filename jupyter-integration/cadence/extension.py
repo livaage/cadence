@@ -11,6 +11,27 @@ lesson name a teacher used three weeks ago.
 
 from . import lesson_store
 from .magic import CadenceMagic
+from .progress import (
+    check,
+    mark_done,
+    show_hint,
+    show_solution,
+    submit_image,
+)
+
+
+# Student-side helpers that the generated student notebook's intro promises
+# work as bare names (`check(...)`, `show_hint(...)`, ...). Pushing them into
+# the user namespace at extension-load means students don't need an explicit
+# `from cadence import check, ...` line — and the documented one-cell
+# `%load_ext cadence` + `%cadence_session` header is all they need.
+_STUDENT_HELPERS = {
+    "check": check,
+    "show_hint": show_hint,
+    "show_solution": show_solution,
+    "mark_done": mark_done,
+    "submit_image": submit_image,
+}
 
 
 # Magics where the (possibly multi-word) positional argument is a *lesson* name
@@ -85,6 +106,19 @@ def _register_completers(ipython) -> None:
     set_hook("complete_command", _comparator_completer, str_key="%cadence_register")
 
 
+def _push_student_helpers(ipython) -> None:
+    """Inject `check` / `show_hint` / `show_solution` / `mark_done` /
+    `submit_image` into the user namespace so they resolve as bare names.
+
+    Only fills in names that aren't already bound — if the user has imported
+    a different `check` for their own purposes we don't clobber it."""
+    ns = getattr(ipython, "user_ns", None)
+    if ns is None:
+        return
+    for name, fn in _STUDENT_HELPERS.items():
+        ns.setdefault(name, fn)
+
+
 class CadenceExtension:
     """Thin handle kept for symmetry with the package __all__."""
 
@@ -93,6 +127,7 @@ class CadenceExtension:
         self.magics = CadenceMagic(ipython)
         ipython.register_magics(self.magics)
         _register_completers(ipython)
+        _push_student_helpers(ipython)
 
 
 def load_ipython_extension(ipython):

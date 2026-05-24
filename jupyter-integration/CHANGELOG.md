@@ -6,6 +6,22 @@ release is actually cut + uploaded to PyPI.
 
 ## Unreleased
 
+## 0.2.1 — 2026-05-24
+
+### Fixed
+- **Student notebooks now actually work.** `%load_ext cadence` was only
+  registering magics — it didn't push `check`, `show_hint`,
+  `show_solution`, `mark_done`, or `submit_image` into the user namespace.
+  Every exercise cell scaffolded by `%cadence_scaffold` calls bare
+  `check("id", ...)`, so students would hit `NameError: name 'check' is
+  not defined` on their first cell. Now the extension pushes the
+  student-side helpers into `ipython.user_ns` at load time (with
+  `setdefault`, so an existing user-bound name isn't clobbered).
+- Student intro markdown referenced `cadence.show_my_data()` and
+  `cadence.delete_my_data()` — neither function exists. Pointed it at
+  the actual interface: `%cadence_export_my_data` and
+  `%cadence_delete_my_data --yes`.
+
 ## 0.2.0 — 2026-05-24
 
 First production release to PyPI. 0.1.x was the TestPyPI iteration line;

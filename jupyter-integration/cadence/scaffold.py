@@ -320,9 +320,9 @@ _STUDENT_INTRO = (
     '<li><strong>Stuck?</strong> <code>show_hint("id")</code> for the '
     "teacher's hint, or <code>show_solution(\"id\")</code> after a few wrong "
     "attempts if your teacher enabled solution reveals.</li>"
-    '<li><strong>Your data:</strong> <code>cadence.show_my_data()</code> '
-    'to view what\'s stored about you, '
-    '<code>cadence.delete_my_data()</code> to wipe it.</li>'
+    '<li><strong>Your data:</strong> <code>%cadence_export_my_data</code> '
+    "to download what's stored about you, "
+    '<code>%cadence_delete_my_data --yes</code> to wipe it.</li>'
     '</ul></div>'
 )
 
