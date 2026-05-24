@@ -226,6 +226,13 @@ export const closeMyAccount = async (): Promise<void> => {
   await api.delete('/auth/me');
 };
 
+export const deleteEverything = async (): Promise<void> => {
+  // Hard-delete: teacher row + every lesson, course, session, attempt,
+  // submission, and solution-reveal owned by this teacher. Irreversible —
+  // no grace period (cf. closeMyAccount, which is recoverable for 30 days).
+  await api.post('/auth/me/delete-everything');
+};
+
 export const listMyCourses = async (): Promise<CourseSummaryEntry[]> => {
   const response = await api.get('/courses/mine');
   return response.data;

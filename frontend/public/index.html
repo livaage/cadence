@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#2BA89E" />
     <meta name="description" content="Cadence — live student progress dashboards for Jupyter teaching" />
+    <!-- Several dashboard URLs (/teacher/live, /teacher/course) carry a
+         teacher_token in the query string. strict-origin-when-cross-origin
+         sends only the origin (not the full URL with query params) to other
+         origins when teachers click external links from a dashboard page,
+         so those tokens never leak via the Referer header. Same-origin
+         navigation still gets the full URL — that's intra-app and fine. -->
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <title>Cadence</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

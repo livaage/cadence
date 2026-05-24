@@ -147,179 +147,138 @@ const Guide: React.FC = () => {
 
       {tab === 0 && (
         <>
-          <Step n={1} title="Install the Jupyter extension">
+          <Step n={1} title="Install">
             <Inline>One-time install on the teacher's machine:</Inline>
             <CodeBlock lang="bash">{`pip install cadence-edu`}</CodeBlock>
             <Inline>
-              Then sign in from a notebook so the lessons + courses you create belong to your
-              account and show up automatically in your library:
+              You don't strictly need an account for one-off lessons, but signing in lets your
+              lessons + courses persist across machines and show up automatically in your library:
             </Inline>
             <CodeBlock>{`%load_ext cadence
 %cadence_login --username <your-username>     # prompts for password
-# or sign in with GitHub from cadence-dash.com/login`}</CodeBlock>
-            <Inline>
-              Quick one-off lessons (no roster, ephemeral) don't strictly require an account, but
-              creating a course (semester-style) does.
-            </Inline>
-            <Box sx={{ mt: 2 }}>
-              <SectionLabel>Starter notebooks</SectionLabel>
-              <Inline>
-                Don't want to start from a blank cell? The package ships a CLI that drops a
-                pre-wired notebook in the current directory:
-              </Inline>
-              <CodeBlock lang="bash">{`cadence-cli new teacher --name "Week 3: Fibonacci"
-cadence-cli new student --name "Week 3: Fibonacci"`}</CodeBlock>
-              <Inline>
-                The teacher scaffold already has <code>%load_ext cadence</code>,{' '}
-                <code>%cadence_create_lesson</code>, a YAML registration block, and{' '}
-                <code>%cadence_self_test</code> in order. The student scaffold has a
-                placeholder <code>%cadence_session</code> line and one example{' '}
-                <code>check(...)</code>. Both are tiny on purpose — they're a launching pad, not a
-                tutorial.
-              </Inline>
-              <Inline>
-                <strong>While you're typing magics</strong>, hit{' '}
-                <code>%cadence_<kbd>Tab</kbd></code> to autocomplete the magic name,{' '}
-                <code>%cadence_register?</code> for full argument help on any one command, or{' '}
-                <code>%cadence_help</code> for a one-page cheatsheet of every magic with its
-                syntax. After typing <code>%cadence_lesson{' '}</code> the cached lesson names
-                tab-complete too.
-              </Inline>
-            </Box>
+# or: %cadence_login --token <jwt>            # paste a GitHub-OAuth JWT`}</CodeBlock>
           </Step>
 
-          <Step n={2} title="Create your first lesson">
-            <Inline>In a teacher-only notebook (not one you'll send to students):</Inline>
-            <CodeBlock>{`%cadence_create_lesson "Week 3: Fibonacci"`}</CodeBlock>
+          <Step n={2} title="Write your teaching notebook normally">
             <Inline>
-              The output shows a <code>join_code</code> (short, shareable — e.g.{' '}
-              <code>soup-river-42</code>), a dashboard URL, and a pre-filled snippet you can paste
-              at the top of the student notebook so they don't have to type the code. The card also
-              tells you the per-session data retention (default <strong>7 days</strong>) and how
-              to shorten it.
+              Open a fresh notebook and write it the way you'd write any teaching notebook:
+              markdown for explanations, code cells for worked solutions. <strong>You do not
+              need to mark anything for Cadence.</strong> Run the cells end-to-end so your
+              answer values exist in the kernel.
             </Inline>
             <Inline>
-              Credentials cache to <code>~/.cadence/lessons.yaml</code> (mode 0600). Tomorrow you
-              can reopen the same lesson with <code>%cadence_lesson "Week 3: Fibonacci"</code>{' '}
-              from any notebook.
-            </Inline>
-          </Step>
-
-          <Step n={3} title="Register the expected answers">
-            <Inline>
-              For each thing you want to grade, you tell Cadence three things:
+              When you're ready to wire it for tracking, add (or just acknowledge) two things:
             </Inline>
             <Box sx={{ pl: 0, py: 0.5 }}>
-              <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.8 }}>
-                <Box component="span" sx={{ display: 'inline-block', minWidth: 180, fontFamily: '"JetBrains Mono", monospace', fontSize: '0.82rem', color: 'primary.main' }}>
-                  checkpoint id
-                </Box>
-                — your short label for the checkpoint.
+              <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.7 }}>
+                <Box component="span" sx={{ display: 'inline-block', minWidth: 24, fontWeight: 600, color: 'primary.main' }}>1.</Box>
+                Markdown headings (<code>##</code>, <code>###</code>) above each exercise — these
+                pair with the code cell that follows and become the task description in the
+                student notebook.
               </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.8 }}>
-                <Box component="span" sx={{ display: 'inline-block', minWidth: 180, fontFamily: '"JetBrains Mono", monospace', fontSize: '0.82rem', color: 'primary.main' }}>
-                  comparator
-                </Box>
-                — how to check the answer: <code>exact</code> / <code>numeric</code> /{' '}
-                <code>set</code> / <code>regex</code> / <code>manual</code>.
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.8 }}>
-                <Box component="span" sx={{ display: 'inline-block', minWidth: 180, fontFamily: '"JetBrains Mono", monospace', fontSize: '0.82rem', color: 'primary.main' }}>
-                  expected answer
-                </Box>
-                — the value to compare against, as JSON.
+              <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.7 }}>
+                <Box component="span" sx={{ display: 'inline-block', minWidth: 24, fontWeight: 600, color: 'primary.main' }}>2.</Box>
+                Each exercise cell ends with the answer — either as a bare expression (e.g.{' '}
+                <code>arr.mean()</code> on its own line) or a named assignment (<code>mean_value
+                = arr.mean()</code>). That's where Cadence reads the expected value from.
               </Typography>
             </Box>
             <Inline>
-              Two equivalent forms are available — pick whichever fits the cell you're writing.
+              That's it for the recommended (auto) mode. Setup cells, imports, helpers — anything
+              that isn't a heading + answer pair — gets copied verbatim and isn't treated as an
+              exercise.
             </Inline>
 
-            <Box sx={{ mt: 1 }}>
-              <SectionLabel>One-liner per checkpoint</SectionLabel>
-              <Inline>
-                Flag-driven, fits on one line, good when you're sketching out a single checkpoint
-                while you write the lab:
-              </Inline>
-              <CodeBlock>{`%cadence_register array_mean --comparator numeric --expected 49.5`}</CodeBlock>
-              <Inline>
-                In the student notebook, a cell that ends in <code>check("array_mean", value)</code>{' '}
-                will check <code>value</code> against <code>49.5</code> using numeric comparison
-                (which tolerates floating-point noise). The student sees ✅ or ❌ inline; you see the
-                attempt on the dashboard.
-              </Inline>
-            </Box>
-
             <Box sx={{ mt: 2 }}>
-              <SectionLabel>Bulk registration with YAML</SectionLabel>
+              <SectionLabel>Optional per-cell markers</SectionLabel>
               <Inline>
-                Same fields as the flag form, but as a block — multi-line solution code, hints, and
-                section structure read more naturally when you have several checkpoints in one place:
+                When you need control beyond the defaults, drop comment markers into specific
+                cells. All markers are inert (just comments) — the magics are what do the work.
               </Inline>
-              <CodeBlock lang="yaml">{`%%cadence_register_yaml
-- id: setup.mean-value
-  comparator: numeric
-  expected: {value: 49.5, tolerance: 0.001}
-  hint: average of 0..99
-  hint_after: 2              # show_hint() unlocks after 2 wrong attempts
-  order: 1
-
-- id: discovery.higgs-peak
-  comparator: exact
-  expected: 125
-  reveal_after: 3            # show_solution becomes available after 3 attempts
-  solution_value: "125"
-  solution_code: |
-    bin_edges = np.arange(100, 151)
-    counts, _ = np.histogram(m_gg, bins=bin_edges)
-    int(bin_edges[np.argmax(counts)])
-  allow_submissions: true    # students may send their code via %%cadence_submit`}</CodeBlock>
-              <Inline>
-                Or keep the YAML in a separate file (lives next to your notebook, easy to version
-                control) and register from there:
-              </Inline>
-              <CodeBlock>{`%cadence_register_yaml_file checkpoints/week3.yaml`}</CodeBlock>
-              <Inline>
-                <strong>Sectioning</strong> is free: dotted IDs like{' '}
-                <code>setup.mean-value</code> and <code>discovery.higgs-peak</code> get
-                automatically grouped on the dashboard into collapsible section cards.
-              </Inline>
-            </Box>
-
-            <Box sx={{ mt: 2 }}>
-              <SectionLabel>The five comparator types</SectionLabel>
-              <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, px: 2, py: 0.5 }}>
-                <FieldRow name="exact" required>
-                  Strings or simple values, whitespace-trimmed equality.
-                  <CodeBlock>{`%cadence_register greeting --comparator exact --expected '"Hello, World!"'`}</CodeBlock>
+              <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, px: 2, py: 0.5, mt: 1 }}>
+                <FieldRow name="checkpoint" required={false}>
+                  <code># cadence:checkpoint &lt;id&gt; [&lt;comparator&gt;]</code> — set a custom id
+                  for the exercise, or override the inferred comparator (e.g. <code>manual</code>{' '}
+                  for a free-text reflection, <code>exact</code> to force ordered list match).
                 </FieldRow>
-                <FieldRow name="numeric" required>
-                  Numbers with float tolerance. Pass either a bare number (default tolerance 1e-6) or{' '}
-                  <code>{`{"value": …, "tolerance": …}`}</code>.
-                  <CodeBlock>{`%cadence_register circle_area --comparator numeric \\
-    --expected '{"value": 78.5398, "tolerance": 0.001}'`}</CodeBlock>
+                <FieldRow name="hint" required={false}>
+                  <code># cadence:hint: &lt;text&gt;</code> inside the exercise cell becomes the
+                  hint students can request with <code>show_hint("id")</code>. Markdown allowed.
                 </FieldRow>
-                <FieldRow name="set" required>
-                  Order-independent collections. Student's list/tuple/set is compared as a set.
-                  <CodeBlock>{`%cadence_register vowels --comparator set \\
-    --expected '{"value": ["a","e","i","o","u"]}'`}</CodeBlock>
+                <FieldRow name="starter" required={false}>
+                  Wrap a region with <code># cadence:starter</code> / <code># cadence:end</code> and
+                  that region replaces the default <code># Your code here</code> placeholder in
+                  the student stub. Good for multi-step problems.
                 </FieldRow>
-                <FieldRow name="regex" required>
-                  Full-match Python regex on the stringified value.
-                  <CodeBlock>{`%cadence_register email --comparator regex \\
-    --expected '{"pattern": "^[^@]+@[^@]+\\\\.[^@]+$"}'`}</CodeBlock>
+                <FieldRow name="solution" required={false}>
+                  <code># cadence:solution</code> at the top of a code cell copies the whole cell
+                  verbatim into the student notebook (for helper functions, worked examples, etc.).
                 </FieldRow>
-                <FieldRow name="manual" required>
-                  No auto-check. Student self-attests with <code>mark_done(...)</code>. Use this
-                  for reflections, open-ended writeups, or "build a plot" tasks. No{' '}
-                  <code>--expected</code> needed.
-                  <CodeBlock>{`%cadence_register reflection --comparator manual \\
-    --hint "Briefly describe what the peak shape tells you."`}</CodeBlock>
+                <FieldRow name="hide" required={false}>
+                  <code># cadence:hide</code> / <code># cadence:end</code> delimits a region that's
+                  stripped from <strong>both</strong> the registered teacher notebook and the
+                  student notebook — purely teacher-authoring notes.{' '}
+                  Markdown form: <code>&lt;!-- cadence:hide --&gt;</code> …{' '}
+                  <code>&lt;!-- cadence:end --&gt;</code>.
                 </FieldRow>
               </Box>
             </Box>
           </Step>
 
-          <Step n={4} title="Optional teacher features">
+          <Step n={3} title="Run %cadence_autoregister — generates the teacher notebook">
+            <Inline>
+              In a fresh cell at the bottom of your authored notebook, after every other cell has
+              been run:
+            </Inline>
+            <CodeBlock>{`%load_ext cadence
+%cadence_autoregister`}</CodeBlock>
+            <Inline>
+              It walks through four prompts (reveal solutions after N attempts? sign in? attach
+              to a course? retention days?), then writes{' '}
+              <code>&lt;your-notebook&gt;_registered.ipynb</code> next to the source. That second
+              file is the one you'll keep around — it has each <code>%cadence_register …</code>{' '}
+              line injected at the top of its exercise cell so you can scan id / comparator /
+              expected at a glance.
+            </Inline>
+
+            <Box sx={{ mt: 2, p: 2, borderRadius: 1.5, bgcolor: '#f8fafc', borderLeft: '4px solid #2563eb' }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, color: '#1e3a8a', mb: 1 }}>
+                Three notebooks, two transformations
+              </Typography>
+              <Typography variant="caption" component="pre" sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.78rem', color: '#334155', whiteSpace: 'pre', overflowX: 'auto', display: 'block', m: 0 }}>{`(1) teacher.ipynb               ← what you write
+        │
+        │  %cadence_autoregister
+        ▼
+(2) teacher_registered.ipynb    ← auto-generated: same notebook + registration magic
+        │
+        │  %cadence_scaffold  (already wired in at the bottom)
+        ▼
+(3) teacher_registered_student.ipynb   ← what you share with students`}</Typography>
+            </Box>
+          </Step>
+
+          <Step n={4} title="Open the registered notebook — generates the student version">
+            <Inline>
+              Open <code>&lt;your-notebook&gt;_registered.ipynb</code> in Jupyter and do{' '}
+              <strong>Run All</strong>. That registers the lesson + every checkpoint on the
+              server, then runs the <code>%cadence_scaffold</code> cell at the bottom (added
+              for you automatically), which writes{' '}
+              <code>&lt;your-notebook&gt;_registered_student.ipynb</code>.
+            </Inline>
+            <Inline>
+              The student notebook has a boxed "Welcome — quick reference" panel at the top, the
+              section + exercise headings carried across, your task markdown for each exercise,
+              and a stub cell per exercise containing <code>check("id", ...)</code> (with starter
+              scaffolding when you used a <code>cadence:starter</code> block). Share that file
+              with students.
+            </Inline>
+            <Inline>
+              Both downstream files are derived — re-run autoregister anytime to regenerate them
+              cleanly.
+            </Inline>
+          </Step>
+
+          <Step n={5} title="Optional teacher features">
             <Inline>
               All flags on <code>%cadence_register</code> (or fields in the YAML form). None
               required — but they're what makes Cadence feel alive in the classroom.
@@ -394,21 +353,21 @@ cadence-cli new student --name "Week 3: Fibonacci"`}</CodeBlock>
             </Grid>
           </Step>
 
-          <Step n={5} title="Self-test, then distribute">
+          <Step n={6} title="Self-test before distributing">
             <Inline>
-              Submits the teacher's expected answer for every auto-checked checkpoint — catches
-              typos in <code>expected</code> values or tolerance errors before students do.
+              Inside the registered notebook, before you share the student version, submits the
+              teacher's expected answer for every auto-checked checkpoint — catches typos in{' '}
+              <code>expected</code> values or tolerance errors before students do.
             </Inline>
             <CodeBlock>{`%cadence_self_test`}</CodeBlock>
             <Inline>
-              Save the student version of the notebook (your answer code removed, replaced with{' '}
-              <code>check("id", value)</code> calls). Or paste the pre-filled snippet from the
-              lesson card at the top so students don't even need to type the join code. The
-              dashboard URL updates every ~3 seconds while the class is active.
+              The student version is already written by <code>%cadence_scaffold</code> (step 4);
+              all that's left is to send the file. The dashboard URL updates every ~3 seconds
+              while the class is active.
             </Inline>
           </Step>
 
-          <Step n={6} title="Project the join code in class">
+          <Step n={7} title="Project the join code in class">
             <Inline>
               When you're at the front of the classroom and want students to type the join code,
               two options:
@@ -476,6 +435,62 @@ cadence-cli new student --name "Week 3: Fibonacci"`}</CodeBlock>
                 <Inline>
                   Copies all the checkpoints, gives you a fresh join code and a clean session pool.
                   Original stays intact.
+                </Inline>
+              </Box>
+            </CardContent>
+          </Card>
+
+          <SectionLabel>Alternative registration paths</SectionLabel>
+          <Card sx={{ mb: 3 }}>
+            <CardContent sx={{ p: 3 }}>
+              <Inline>
+                <code>%cadence_autoregister</code> is the recommended path, but the original
+                registration mechanisms still work — pick whichever fits your workflow:
+              </Inline>
+              <Box sx={{ mt: 2 }}>
+                <Inline>
+                  <strong>YAML block in a cell</strong> — type expected values explicitly
+                  instead of having them inferred from kernel state. Good when there's no
+                  obvious "answer variable" to extract.
+                </Inline>
+                <Box sx={{ mt: 1 }}>
+                  <CodeBlock lang="yaml">{`%%cadence_register_yaml
+- id: setup.mean-value
+  comparator: numeric
+  expected: {value: 49.5, tolerance: 0.001}
+  hint: average of 0..99
+- id: discovery.higgs-peak
+  comparator: exact
+  expected: 125
+  reveal_after: 3
+  solution_value: "125"
+  allow_submissions: true`}</CodeBlock>
+                </Box>
+              </Box>
+              <Box sx={{ mt: 2 }}>
+                <Inline>
+                  <strong>YAML in a file</strong> — keep rubrics in version control across many
+                  notebooks.
+                </Inline>
+                <Box sx={{ mt: 1 }}>
+                  <CodeBlock>{`%cadence_register_yaml_file checkpoints/week3.yaml`}</CodeBlock>
+                </Box>
+              </Box>
+              <Box sx={{ mt: 2 }}>
+                <Inline>
+                  <strong>Inline per-checkpoint</strong> — surgical edits, one-off demos.
+                </Inline>
+                <Box sx={{ mt: 1 }}>
+                  <CodeBlock>{`%cadence_register array_mean --comparator numeric --expected 49.5
+%cadence_register reflection --comparator manual --hint "Briefly describe what the peak shape tells you."`}</CodeBlock>
+                </Box>
+              </Box>
+              <Box sx={{ mt: 2 }}>
+                <Inline>
+                  All four forms (auto-register, YAML block, YAML file, inline) coexist — you
+                  can mix them in the same notebook. The five comparator types (<code>exact</code>,{' '}
+                  <code>numeric</code>, <code>set</code>, <code>regex</code>, <code>manual</code>)
+                  work the same across all paths.
                 </Inline>
               </Box>
             </CardContent>

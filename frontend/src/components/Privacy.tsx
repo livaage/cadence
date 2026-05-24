@@ -152,20 +152,30 @@ const Privacy: React.FC = () => {
           <Stack spacing={1.5}>
             <Typography variant="body2">
               Retention is set by the teacher at session or course creation and shown to students
-              in the join notice. Defaults and bounds:
+              in the join notice. Past the retention window we{' '}
+              <strong>de-identify</strong> the session — the student's display name is removed
+              from our database — but per-checkpoint aggregate data (solve rates, common wrong
+              answers, timing distributions) is kept so the teacher's dashboard still works.
+              Use <code>%cadence_delete_my_data</code> any time before that to wipe everything,
+              including the aggregates, immediately.
             </Typography>
             <Typography variant="body2" component="div">
               <ul style={{ margin: 0, paddingLeft: 20 }}>
-                <li><strong>Quick session mode:</strong> 24 hours, 7 days, or 30 days. Default 7 days.</li>
-                <li><strong>Course mode:</strong> 24 hours to 12 months. Default 3 months, or 30 days after course end.</li>
-                <li>Cohort-level aggregates (means/percentages only, cohorts of 10 or more): kept indefinitely in anonymous form.</li>
-                <li>Teacher account data: until you close the account, then 30 days.</li>
+                <li><strong>Quick lesson mode:</strong> 1–365 days, default 7. Set with{' '}
+                  <code>--retention-days N</code> at creation.</li>
+                <li><strong>Course mode:</strong> 1–365 days, default 90 (~3 months). Notebooks
+                  attached to a course inherit the course's retention.</li>
+                <li>Cohort-level aggregates (means/percentages only, cohorts of 10 or more):
+                  kept indefinitely in anonymous form.</li>
+                <li>Teacher account data: until you close the account, then 30 days. Use
+                  "Delete everything" on the account page to wipe immediately.</li>
                 <li>Backups: 30 days, encrypted. Deletions propagate within this window.</li>
                 <li>Access logs: 12 months for breach forensics and accountability.</li>
               </ul>
             </Typography>
             <Typography variant="body2">
-              We never retain data past the teacher-set expiry except where law requires it.
+              We never retain personally-identifying data past the teacher-set expiry except
+              where law requires it.
             </Typography>
           </Stack>
         </CardContent>

@@ -19,6 +19,8 @@ from .api import CadenceAPI
 from . import progress as _progress
 from . import lesson_store
 from . import creds_store
+from . import scaffold as _scaffold
+from . import autoregister as _autoregister
 
 
 def _strip_inline_comment(line: str) -> str:
@@ -43,10 +45,41 @@ def _strip_inline_comment(line: str) -> str:
     return line
 
 
+def _unwrap_quotes(value):
+    """Strip a single matching pair of outer quotes from a string.
+
+    IPython's magic_arguments runs `arg_split` in posix=False mode, which
+    PRESERVES quote characters around argument values — so `--password "abc"`
+    would otherwise leave `args.password == '"abc"'` (5 chars, not 3). We
+    apply this uniformly across every string arg parsed by `parse_argstring`
+    so quoted and unquoted invocations behave identically. Only one matching
+    outer pair is removed, so an oddly-quoted real value like `"x"y"` keeps
+    its inner quote characters."""
+    if value is None or not isinstance(value, str) or len(value) < 2:
+        return value
+    if value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
 def parse_argstring(magic, line):
-    """Like IPython's parse_argstring, but strip trailing `# ...` comments
-    first so users can annotate magic invocations the same way they do code."""
-    return _ipython_parse_argstring(magic, _strip_inline_comment(line))
+    """Like IPython's parse_argstring, with two consistency fixes applied
+    once here so every magic gets them:
+
+      1. Trailing `# ...` comments are stripped before argparse sees them, so
+         `%cadence_delete_my_data --yes   # actually wipes` doesn't choke.
+      2. Outer quotes are removed from every string arg (and every element of
+         list-valued args), so `--password "x"` and `--password x` reach the
+         magic as the same value `x`. Without this, IPython's posix=False
+         arg_split would silently produce `'"x"'` — bug class that already
+         bit %cadence_login once."""
+    parsed = _ipython_parse_argstring(magic, _strip_inline_comment(line))
+    for name, value in list(vars(parsed).items()):
+        if isinstance(value, str):
+            setattr(parsed, name, _unwrap_quotes(value))
+        elif isinstance(value, list):
+            setattr(parsed, name, [_unwrap_quotes(v) if isinstance(v, str) else v for v in value])
+    return parsed
 
 
 def _parse_expected(raw: str) -> dict:
@@ -368,25 +401,10 @@ class CadenceMagic(Magics):
             creds_store.set_credentials(jwt, username=me.get("username"))
             return self._render_login_success(me)
 
-        web_url = os.getenv("CADENCE_DASHBOARD_URL",
-                            os.getenv("CADENCE_WEB_URL", "https://cadence-dash.com"))
-        display(HTML(f'''
-            <div style="border: 1px solid #3b82f6; border-radius: 6px;
-                        padding: 12px; margin: 8px 0; background: #eff6ff;
-                        font-size: 0.9em;">
-                <div style="font-weight: 600; color: #1e40af; margin-bottom: 6px;">
-                    Logging in to Cadence
-                </div>
-                <div>
-                    <strong>Signed up with GitHub?</strong> You haven't set a
-                    Jupyter password yet. Go to
-                    <a href="{web_url.rstrip('/')}/teacher/account?prompt=password" target="_blank">
-                        {web_url.rstrip('/')}/teacher/account</a>
-                    and set one — then come back here and enter your username +
-                    that password below.
-                </div>
-            </div>
-        '''))
+        # No pre-login banner: the GitHub-no-password hint that used to live
+        # here was shown to *everyone*, including users with passwords, which
+        # made the flow noisy and falsely scary. The post-failure error path
+        # below already surfaces the hint when it's actually relevant.
 
         username = args.username
         if not username:
@@ -407,16 +425,18 @@ class CadenceMagic(Magics):
         if not password:
             return display(HTML('<div style="color: red;">❌ Password required.</div>'))
 
+        web_url = os.getenv("CADENCE_DASHBOARD_URL",
+                            os.getenv("CADENCE_WEB_URL", "https://cadence-dash.com"))
         try:
             resp = self.api.login(username, password)
         except Exception as e:
             return display(HTML(
-                f'<div style="color: red;">❌ Login failed: {e}<br>'
-                f'<span style="font-size: 0.9em; color: #555;">'
-                f'If you signed up with GitHub, this account has no password. '
-                f'Use <code>%cadence_login --token YOUR_JWT</code> instead — '
-                f'see the banner above for how to grab the JWT.'
-                f'</span></div>'
+                f'<div style="color: red;">❌ Login failed: {e}</div>'
+                f'<div style="font-size: 0.9em; color: #475569; margin-top: 4px;">'
+                f'If you signed up with GitHub and haven\'t set a Jupyter password, '
+                f'<a href="{web_url.rstrip("/")}/teacher/account?prompt=password" target="_blank">set one here</a> '
+                f'then retry, or paste a JWT with <code>%cadence_login --token YOUR_JWT</code>.'
+                f'</div>'
             ))
         jwt = resp["access_token"]
         self.api.set_auth_token(jwt)
@@ -433,13 +453,13 @@ class CadenceMagic(Magics):
     def _render_login_success(self, me: dict) -> None:
         display(HTML(f'''
             <div style="border: 1px solid #15803d; border-radius: 6px;
-                        padding: 10px; margin: 8px 0; background: #f0fdf4;">
+                        padding: 10px 14px; margin: 8px 0; background: #f0fdf4;
+                        line-height: 1.5; color: #1f2937;">
                 <div style="font-weight: 600; color: #15803d;">
                     ✅ Signed in as {me.get("username", "?")}
                 </div>
-                <div style="margin-top: 4px; font-size: 0.85em; color: #555;">
-                    Email: {me.get("email", "?")}
-                    · Credentials cached to <code>~/.cadence/credentials.yaml</code>.
+                <div style="margin-top: 4px; font-size: 0.85em; color: #475569;">
+                    {me.get("email", "?")} · cached in <code>~/.cadence/credentials.yaml</code>
                 </div>
             </div>
         '''))
@@ -451,7 +471,7 @@ class CadenceMagic(Magics):
         if self.api:
             self.api.clear_auth_token()
         display(HTML(
-            '<div style="color: #555;">👋 Signed out. The JWT cache at '
+            '<div style="color: #475569;">👋 Signed out. The JWT cache at '
             '<code>~/.cadence/credentials.yaml</code> has been removed.</div>'
         ))
 
@@ -462,7 +482,7 @@ class CadenceMagic(Magics):
             return
         if not creds_store.get_jwt():
             return display(HTML(
-                '<div style="color: #555;">Not signed in. Run '
+                '<div style="color: #475569;">Not signed in. Run '
                 '<code>%cadence_login</code> first.</div>'
             ))
         try:
@@ -606,47 +626,57 @@ class CadenceMagic(Magics):
                 "(bookmark this — you're not signed in, so the URL is the only way back. "
                 "The dashboard has a <strong>Display join code</strong> button for projecting in class)"
             )
+        retention_word = f"{retention} day{'s' if retention != 1 else ''}"
         display(HTML(f'''
             <div style="border: 1px solid #1976d2; border-radius: 6px;
-                        padding: 12px; margin: 8px 0; background: #f4f9ff;">
-                <div style="font-weight: 600; color: #1976d2;">✅ {title}: {lesson["name"]}</div>
-                <div style="margin-top: 8px;">
-                    Share this join code with students:
-                    <code style="font-size: 1.1em; background: white; padding: 2px 6px; border-radius: 3px;">{join_code}</code>
-                    {self._copy_button(join_code)}
+                        padding: 14px 16px; margin: 8px 0; background: #f4f9ff;
+                        line-height: 1.5; color: #1f2937;">
+                <div style="font-weight: 600; color: #1976d2; margin-bottom: 10px;">
+                    ✅ {title}: {lesson["name"]}
                 </div>
-                <div style="margin-top: 6px; font-size: 0.85em; color: #555;">
-                    Or paste this snippet into the top of the student notebook so
-                    they don't need to type the code:
-                    <pre style="background: white; padding: 8px 10px; margin: 4px 0 0; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; overflow-x: auto;">%load_ext cadence
+
+                <div style="margin-bottom: 12px;">
+                    <div>Share this join code with students:</div>
+                    <div style="margin-top: 4px;">
+                        <code style="background: white; padding: 3px 8px; border-radius: 3px;">{join_code}</code>
+                        {self._copy_button(join_code)}
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 12px;">
+                    <div style="font-size: 0.85em; color: #475569;">Or paste this snippet at the top of the student notebook:</div>
+                    <pre style="background: white; padding: 8px 10px; margin: 4px 0; border-radius: 3px; font-size: 0.9em; overflow-x: auto;">%load_ext cadence
 %cadence_session {join_code} "your-name"</pre>
                     {self._copy_button(student_snippet, "Copy snippet")}
                 </div>
-                <div style="margin-top: 8px;">
-                    🔗 <a href="{dash}" target="_blank">Open live dashboard</a>
+
+                <div style="margin-bottom: 12px;">
+                    <a href="{dash}" target="_blank">Open live dashboard</a>
                     {self._copy_button(dash, "Copy URL")}
-                    <em style="color: #666; margin-left: 6px;">{dash_hint}</em>
+                    <div style="font-size: 0.85em; color: #475569; margin-top: 2px;">{dash_hint}</div>
                 </div>
-                <div style="margin-top: 8px;">
-                    <span style="color: #555;">Teacher token (keep secret):</span>
-                    <code style="font-size: 0.85em; background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
+
+                <div style="font-size: 0.85em; color: #475569; margin-bottom: 12px;">
+                    Teacher token (keep secret):
+                    <code style="background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
                     {self._copy_button(teacher_token, "Copy token")}
                 </div>
-                <div style="margin-top: 8px; padding: 6px 10px; background: white; border-radius: 4px; font-size: 0.9em;">
-                    🗓 <strong>Data retention:</strong> each student session is wiped
-                    <strong>{retention} day{'s' if retention != 1 else ''}</strong>
-                    after the student last touches it. The default for quick
-                    lessons is 7 days. You can shorten this with
-                    <code>%cadence_set_retention --days N</code> — but per the
-                    Terms, you can't extend it (data subjects relied on the
-                    original promise). To wipe sooner, use
+
+                <div style="font-size: 0.85em; color: #475569; padding: 8px 10px; background: white; border-radius: 4px; margin-bottom: 8px;">
+                    <strong>Retention:</strong> after <strong>{retention_word}</strong> of inactivity,
+                    each student session is <strong>de-identified</strong> — the display name is
+                    removed but per-checkpoint stats (solve rates, common wrong answers, timing)
+                    are kept for your dashboard. Default 7 days for quick lessons; pass
+                    <code>--retention-days N</code> (1–365) at creation to start higher.
+                    Attaching this lesson to a course bumps it to the course's retention (3 months
+                    by default) automatically. Wipe everything immediately with
                     <code>%cadence_delete_lesson "{lesson["name"]}" --yes</code>.
                 </div>
-                <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
-                    Saved to <code>~/.cadence/lessons.yaml</code> ·
-                    Manage: <code>%cadence_clone_lesson "{lesson["name"]}" --as "..."</code> ·
-                    <code>%cadence_delete_lesson "{lesson["name"]}"</code> ·
-                    <code>%cadence_attach_lesson "{lesson["name"]}" --to "&lt;course&gt;"</code>
+
+                <div style="font-size: 0.8em; color: #64748b;">
+                    Cached in <code>~/.cadence/lessons.yaml</code>.
+                    Other commands: <code>%cadence_clone_lesson</code>,
+                    <code>%cadence_attach_lesson … --to "&lt;course&gt;"</code>.
                 </div>
             </div>
         '''))
@@ -654,6 +684,10 @@ class CadenceMagic(Magics):
     @magic_arguments()
     @argument('name', help='Lesson name (used as the local cache key)', nargs='+')
     @argument('--code', default=None, help='Override the auto-generated join code')
+    @argument('--retention-days', type=int, default=None,
+              help='Per-session retention in days (1-365). Default 7. Can be '
+                   'shortened later but never extended, so pick the value you '
+                   'actually want now.')
     @argument('--force', action='store_true',
               help='Create a second lesson even if one with this name is already cached.')
     @line_magic
@@ -661,7 +695,9 @@ class CadenceMagic(Magics):
         """Create a new lesson and persist credentials to ~/.cadence/lessons.yaml.
 
         Usage:
-            %cadence_create_lesson "Week 3: Fibonacci" [--code my-code] [--force]
+            %cadence_create_lesson "Week 3: Fibonacci"
+            %cadence_create_lesson "Week 3: Fibonacci" --retention-days 30
+            %cadence_create_lesson "..." [--code my-code] [--force]
 
         Re-runs are safe: if a lesson with this name is already cached, we
         load and reactivate it instead of creating a duplicate. Pass --force
@@ -704,7 +740,7 @@ class CadenceMagic(Magics):
                     f'<code>%cadence_delete_lesson "{name}" --yes</code>, then re-run.<br>'
                     f'· You truly want two lessons with the exact same name: re-run with '
                     f'<code>--force</code>.<br>'
-                    f'<em style="color: #555; font-size: 0.85em;">Note: a "session" is a '
+                    f'<em style="color: #475569; font-size: 0.85em;">Note: a "session" is a '
                     f'single student\'s join. The system creates them automatically on every '
                     f'<code>%cadence_session</code> call — you never have to "make" one.</em>'
                     f'</div>'
@@ -721,8 +757,16 @@ class CadenceMagic(Magics):
             # and create fresh — quieter than asking the user to "forget" it.
 
         join_code = args.code or lesson_store.generate_join_code()
+        if args.retention_days is not None and not (1 <= args.retention_days <= 365):
+            return display(HTML(
+                '<div style="color: red;">❌ <code>--retention-days</code> must be between 1 and 365.</div>'
+            ))
         try:
-            resp = self.api.create_lesson(name=name, join_code=join_code)
+            resp = self.api.create_lesson(
+                name=name,
+                join_code=join_code,
+                session_retention_days=args.retention_days,
+            )
         except Exception as e:
             return display(HTML(f'<div style="color: red;">❌ Could not create lesson: {e}</div>'))
 
@@ -812,7 +856,7 @@ class CadenceMagic(Magics):
                 <div style="font-family: 'JetBrains Mono', 'Menlo', monospace;
                             font-size: 4.5em; font-weight: 700; letter-spacing: 0.04em;
                             color: #0d47a1; line-height: 1.1;">{code}</div>
-                <div style="color: #666; margin-top: 28px; font-size: 0.95em;">
+                <div style="color: #475569; margin-top: 28px; font-size: 0.95em;">
                     Run in a notebook: <code style="background: #f0f0f0; padding: 2px 6px;
                     border-radius: 3px;">%cadence_session {code} "your-name"</code>
                 </div>
@@ -834,36 +878,50 @@ class CadenceMagic(Magics):
         join_code = course["join_code"]
         teacher_token = course["teacher_token"]
         retention = course.get("session_retention_days", 90)
+        retention_word = f"{retention} day{'s' if retention != 1 else ''}"
         display(HTML(f'''
             <div style="border: 1px solid #7b1fa2; border-radius: 6px;
-                        padding: 12px; margin: 8px 0; background: #faf5ff;">
-                <div style="font-weight: 600; color: #7b1fa2;">📚 {title}: {course["name"]}</div>
-                <div style="margin-top: 8px;">
-                    Share this course join code with students:
-                    <code style="font-size: 1.1em; background: white; padding: 2px 6px; border-radius: 3px;">{join_code}</code>
-                    {self._copy_button(join_code)}
+                        padding: 14px 16px; margin: 8px 0; background: #faf5ff;
+                        line-height: 1.5; color: #1f2937;">
+                <div style="font-weight: 600; color: #7b1fa2; margin-bottom: 10px;">
+                    📚 {title}: {course["name"]}
                 </div>
-                <div style="margin-top: 8px;">
-                    🔗 <a href="{dash}" target="_blank">Open course dashboard</a>
+
+                <div style="margin-bottom: 12px;">
+                    <div>Share this course join code with students:</div>
+                    <div style="margin-top: 4px;">
+                        <code style="background: white; padding: 3px 8px; border-radius: 3px;">{join_code}</code>
+                        {self._copy_button(join_code)}
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 12px;">
+                    <a href="{dash}" target="_blank">Open course dashboard</a>
                     {self._copy_button(dash, "Copy URL")}
-                    <em style="color: #666; margin-left: 6px;">(saved to your library automatically — the dashboard has a <strong>Display join code</strong> button for projecting in class)</em>
+                    <div style="font-size: 0.85em; color: #475569; margin-top: 2px;">
+                        Saved to your library — use the dashboard's <strong>Display join code</strong> button for projecting in class.
+                    </div>
                 </div>
-                <div style="margin-top: 8px;">
-                    <span style="color: #555;">Teacher token (keep secret):</span>
-                    <code style="font-size: 0.85em; background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
+
+                <div style="font-size: 0.85em; color: #475569; margin-bottom: 12px;">
+                    Teacher token (keep secret):
+                    <code style="background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
                     {self._copy_button(teacher_token, "Copy token")}
                 </div>
-                <div style="margin-top: 8px; padding: 6px 10px; background: white; border-radius: 4px; font-size: 0.9em;">
-                    🗓 <strong>Data retention:</strong> each student session is wiped
-                    <strong>{retention} day{'s' if retention != 1 else ''}</strong>
-                    after the student last touches it. The default for courses
-                    is 90 days. You can shorten this with
-                    <code>%cadence_set_retention --course --days N</code> —
-                    but per the Terms, you can't extend it.
+
+                <div style="font-size: 0.85em; color: #475569; padding: 8px 10px; background: white; border-radius: 4px; margin-bottom: 8px;">
+                    <strong>Retention:</strong> after <strong>{retention_word}</strong> of inactivity,
+                    each student session is <strong>de-identified</strong> — the display name is
+                    removed but per-checkpoint stats are kept for the dashboard. Default 90 days
+                    (~3 months) for courses, since you typically want progress visible across a
+                    whole term. Pass <code>--retention-days N</code> at creation to override (1–365);
+                    shorten any time with <code>%cadence_set_retention --course --days N</code>.
+                    Notebooks attached to this course inherit its retention automatically.
                 </div>
-                <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
-                    <code>%cadence_add_notebook "&lt;name&gt;"</code> to add a notebook ·
-                    <code>%cadence_delete_course "{course["name"]}"</code> to wipe.
+
+                <div style="font-size: 0.8em; color: #64748b;">
+                    Add notebooks with <code>%cadence_add_notebook "&lt;name&gt;"</code>.
+                    Wipe with <code>%cadence_delete_course "{course["name"]}" --yes</code>.
                 </div>
             </div>
         '''))
@@ -899,7 +957,7 @@ class CadenceMagic(Magics):
                 'Courses are tied to a teacher account so we can authorize student'
                 ' rights requests against a named controller. Run'
                 ' <code>%cadence_login</code> first, then re-run this command.<br>'
-                '<span style="font-size: 0.85em; color: #555;">Quick one-off lessons'
+                '<span style="font-size: 0.85em; color: #475569;">Quick one-off lessons'
                 ' (<code>%cadence_create_lesson</code>) do not require an account.</span>'
                 '</div>'
             ))
@@ -941,6 +999,7 @@ class CadenceMagic(Magics):
                     course_name=resp["name"],
                     join_code=resp["join_code"],
                     api=self.api,
+                    session_retention_days=resp.get("session_retention_days"),
                 )
                 return self._render_course_card(resp, created=False)
             # Stale cache; fall through and create.
@@ -990,6 +1049,7 @@ class CadenceMagic(Magics):
             course_name=resp["name"],
             join_code=resp["join_code"],
             api=self.api,
+            session_retention_days=resp.get("session_retention_days"),
         )
         self._render_course_card(resp, created=True)
 
@@ -1020,6 +1080,7 @@ class CadenceMagic(Magics):
             course_name=resp["name"],
             join_code=resp["join_code"],
             api=self.api,
+            session_retention_days=resp.get("session_retention_days"),
         )
         self._render_course_card(resp, created=False)
 
@@ -1051,7 +1112,17 @@ class CadenceMagic(Magics):
 
         join_code = args.code or lesson_store.generate_join_code()
         try:
-            lesson = self.api.create_lesson(name=name, join_code=join_code)
+            # Create the lesson with the course's retention upfront so the
+            # rendered lesson card matches the course card. The server-side
+            # attach below has its own bump-on-attach safety net, but doing
+            # this at creation avoids the local-card-vs-server-state mismatch
+            # that used to show "7 days" on the lesson and "90 days" on the
+            # course in the same render.
+            lesson = self.api.create_lesson(
+                name=name,
+                join_code=join_code,
+                session_retention_days=course.get("session_retention_days"),
+            )
             self.api.add_notebook_to_course(
                 course_teacher_token=course["teacher_token"],
                 lesson_teacher_token=lesson["teacher_token"],
@@ -1141,7 +1212,7 @@ class CadenceMagic(Magics):
                 <div style="font-weight: 600; color: #15803d;">
                     🔗 Attached <code>{lesson_name}</code> to course <code>{course_name}</code>
                 </div>
-                <div style="margin-top: 6px; font-size: 0.85em; color: #555;">
+                <div style="margin-top: 6px; font-size: 0.85em; color: #475569;">
                     The course dashboard now shows it as one of the notebooks.
                     Students who join via the course code can pick it with
                     <code>%cadence_notebook "{lesson_name}"</code>.
@@ -1187,7 +1258,7 @@ class CadenceMagic(Magics):
         except Exception as e:
             return display(HTML(f'<div style="color: red;">❌ Detach failed: {e}</div>'))
         display(HTML(
-            f'<div style="color: #555;">🔗 Detached <code>{lesson_name}</code> from course '
+            f'<div style="color: #475569;">🔗 Detached <code>{lesson_name}</code> from course '
             f'<code>{course_name}</code>. The lesson itself is unchanged.</div>'
         ))
 
@@ -1354,6 +1425,7 @@ class CadenceMagic(Magics):
                 course_name=resp["name"],
                 join_code=resp["join_code"],
                 api=self.api,
+                session_retention_days=resp.get("session_retention_days"),
             )
             return self._render_course_card(resp, created=False)
 
@@ -1416,7 +1488,10 @@ class CadenceMagic(Magics):
                         attempts, timing, and code you submit.</li>
                     <li><strong>Who sees it</strong>: your teacher only.</li>
                     <li><strong>How long</strong>: the period your teacher set
-                        for this session, then deleted.</li>
+                        for this session. After that your <em>display name</em>
+                        is removed; per-checkpoint aggregates (solve counts,
+                        common answers) stay for the teacher's dashboard but
+                        no longer point at you.</li>
                     <li><strong>Never</strong>: used to train models, shared with
                         other teachers, sold, or used for ads.</li>
                     <li><strong>Your rights</strong>: see, export, or delete your data
@@ -1424,7 +1499,7 @@ class CadenceMagic(Magics):
                         <code>%cadence_export_my_data</code>,
                         <code>%cadence_delete_my_data</code>.</li>
                 </ul>
-                <div style="font-size: 0.85em; color: #555; margin-top: 6px;">
+                <div style="font-size: 0.85em; color: #475569; margin-top: 6px;">
                     <a href="{privacy_url}" target="_blank">Full privacy notice</a>
                     · Questions or complaints: <code>privacy@cadence-dash.com</code>
                 </div>
@@ -1603,7 +1678,7 @@ class CadenceMagic(Magics):
             f'<tr><td><code>{a["checkpoint_id"]}</code></td>'
             f'<td>{a["attempt_num"]}</td>'
             f'<td>{"✅" if a["is_correct"] else "❌"}</td>'
-            f'<td style="font-size: 0.85em; color: #555;">{a["created_at"]}</td></tr>'
+            f'<td style="font-size: 0.85em; color: #475569;">{a["created_at"]}</td></tr>'
             for a in attempts
         ) or '<tr><td colspan="4"><em>none</em></td></tr>'
 
@@ -1611,7 +1686,7 @@ class CadenceMagic(Magics):
             f'<tr><td><code>{s["checkpoint_id"]}</code></td>'
             f'<td>{len((s["code"] or "").splitlines())} lines</td>'
             f'<td>{"image attached" if s["has_image"] else "—"}</td>'
-            f'<td style="font-size: 0.85em; color: #555;">{s["submitted_at"]}</td></tr>'
+            f'<td style="font-size: 0.85em; color: #475569;">{s["submitted_at"]}</td></tr>'
             for s in submissions
         ) or '<tr><td colspan="4"><em>none</em></td></tr>'
 
@@ -1639,7 +1714,7 @@ class CadenceMagic(Magics):
                     </tr>
                     {submission_rows}
                 </table>
-                <div style="margin-top: 10px; font-size: 0.85em; color: #555;">
+                <div style="margin-top: 10px; font-size: 0.85em; color: #475569;">
                     Solution reveals: {len(reveals)}
                     · Download with <code>%cadence_export_my_data</code>
                     · Delete with <code>%cadence_delete_my_data</code>
@@ -1718,6 +1793,357 @@ class CadenceMagic(Magics):
             ' This kernel is no longer connected — run <code>%cadence_session</code>'
             ' again if you want to rejoin.</div>'
         ))
+
+    # ------------------------------------------------------------------
+    # Teacher: scaffold a student notebook from this teacher notebook
+    # ------------------------------------------------------------------
+
+    @magic_arguments()
+    @argument('src', nargs='?', default=None,
+              help='Path to your teacher notebook. Omit to auto-detect.')
+    @argument('--out', default=None,
+              help='Output path (default: <src>_registered.ipynb).')
+    @argument('--lesson-name', default=None,
+              help='Lesson name (default: derived from the notebook stem).')
+    @argument('--all', dest='force_all', action='store_true',
+              help='Treat every (markdown + code) pair as an exercise even if '
+                   'you have manual `# cadence:checkpoint` markers somewhere. '
+                   'Without this flag, manual markers take over when present.')
+    @argument('--reveal-after', type=int, default=None,
+              help='Add solution reveals after N wrong attempts. Skip to be '
+                   'prompted interactively; pass `--reveal-after 0` to disable '
+                   'reveals without being asked.')
+    @argument('--force', action='store_true',
+              help='Overwrite the output file if it already exists.')
+    @line_magic
+    def cadence_autoregister(self, line):
+        """Turn a vanilla teacher notebook into a Cadence-wired one.
+
+        Walks the current notebook, identifies exercise cells (either by
+        `# cadence:checkpoint <id>` markers or — when no markers exist —
+        by pairing every markdown-heading cell with the code cell that
+        follows it), reads each answer value from the current kernel
+        namespace, and writes a new notebook with `%cadence_create_lesson`
+        and a pre-filled `%%cadence_register_yaml` block at the top.
+
+        Imports and other setup cells are copied verbatim (no markers
+        needed). Review the generated notebook, then run `%cadence_scaffold`
+        on it to produce the student version.
+
+        Usage:
+            %cadence_autoregister                       # auto-detects this notebook
+            %cadence_autoregister teacher.ipynb
+            %cadence_autoregister --all                 # ignore manual markers
+            %cadence_autoregister --reveal-after 3      # skip the prompt
+        """
+        from pathlib import Path
+        args = parse_argstring(self.cadence_autoregister, line)
+        if args.src:
+            src = Path(args.src)
+        else:
+            detected = _scaffold.detect_current_notebook()
+            if detected is None:
+                return display(HTML(
+                    '<div style="color: red;">❌ Could not auto-detect the current notebook. '
+                    'Pass the path explicitly: '
+                    '<code>%cadence_autoregister path/to/teacher.ipynb</code></div>'
+                ))
+            src = detected
+            display(HTML(
+                f'<div style="font-size: 0.85em; color: #475569; margin-bottom: 4px;">'
+                f'Auto-detected notebook: <code>{src}</code></div>'
+            ))
+
+        target = Path(args.out) if args.out else src.with_name(f"{src.stem}_registered.ipynb")
+        if target.exists() and not args.force:
+            return display(HTML(
+                f'<div style="color: red;">❌ <code>{target}</code> already exists. '
+                f'Re-run with <code>--force</code> to overwrite.</div>'
+            ))
+
+        # Interactive prompt for solution reveals (skip if user passed --reveal-after).
+        reveal_after = args.reveal_after
+        if reveal_after is None:
+            try:
+                ans = input(
+                    "Reveal solutions to students after N wrong attempts? "
+                    "[empty=no, default 3 if just yes]: "
+                ).strip().lower()
+            except EOFError:
+                ans = ""
+            if ans in ("", "n", "no"):
+                reveal_after = None
+            elif ans in ("y", "yes"):
+                reveal_after = 3
+            else:
+                try:
+                    reveal_after = int(ans)
+                except ValueError:
+                    return display(HTML(
+                        f'<div style="color: red;">❌ Could not parse '
+                        f'<code>{ans}</code> as a number. Re-run and enter a '
+                        f'plain integer (or empty for no reveals).</div>'
+                    ))
+        elif reveal_after == 0:
+            reveal_after = None  # `--reveal-after 0` is the non-interactive "no"
+
+        # Optional sign-in. Only prompts if the teacher isn't already signed
+        # in; signing in lets them attach the lesson to a course and have it
+        # show up in their /teacher/library across machines.
+        already_signed_in = bool(creds_store.get_jwt())
+        if not already_signed_in:
+            try:
+                ans = input(
+                    "Sign in to track this lesson under your Cadence account "
+                    "(needed for courses)? [y/N]: "
+                ).strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans in ("y", "yes"):
+                # Hand off to the existing login magic; it does its own prompts.
+                self.cadence_login("")
+                already_signed_in = bool(creds_store.get_jwt())
+                if not already_signed_in:
+                    return display(HTML(
+                        '<div style="color: #b45309; padding: 8px;">'
+                        'Sign-in didn\'t complete. Re-run <code>%cadence_autoregister</code> '
+                        'when you\'re ready.</div>'
+                    ))
+
+        # Course context (only meaningful if signed in — courses require it).
+        course_choice = None
+        if already_signed_in:
+            try:
+                course_ans = input(
+                    "Add this lesson to a course? "
+                    "[empty=standalone, '<name>'=existing, 'new: <name>'=create]: "
+                ).strip()
+            except EOFError:
+                course_ans = ""
+            if course_ans:
+                low = course_ans.lower()
+                if low.startswith("new:") or low.startswith("new "):
+                    new_name = course_ans.split(":", 1)[-1].strip()
+                    if low.startswith("new ") and ":" not in course_ans:
+                        new_name = course_ans[4:].strip()
+                    new_name = new_name.strip('"').strip("'")
+                    course_choice = ("new", new_name) if new_name else None
+                else:
+                    course_choice = ("existing", course_ans.strip('"').strip("'"))
+
+        # Retention prompt — defaults depend on whether this is standalone
+        # or part of a course. 7 days is sensible for one-off labs; 90 days
+        # (~3 months) matches a typical course term. Empty input → default.
+        retention_default = 90 if course_choice else 7
+        retention_label = "course" if course_choice else "one-off lesson"
+        retention_days: Optional[int] = None
+        try:
+            ret_ans = input(
+                f"How many days to keep each student's data? "
+                f"(empty = default {retention_default} for {retention_label}): "
+            ).strip()
+        except EOFError:
+            ret_ans = ""
+        if ret_ans:
+            try:
+                retention_days = int(ret_ans)
+                if not (1 <= retention_days <= 365):
+                    return display(HTML(
+                        '<div style="color: red;">❌ Retention must be between '
+                        '1 and 365 days.</div>'
+                    ))
+            except ValueError:
+                return display(HTML(
+                    f'<div style="color: red;">❌ Could not parse '
+                    f'<code>{ret_ans}</code> as a number of days.</div>'
+                ))
+
+        try:
+            result = _autoregister.autoregister(
+                src_path=src,
+                user_ns=self.shell.user_ns,
+                lesson_name=args.lesson_name,
+                out_path=target,
+                reveal_after_attempts=reveal_after,
+                force_all=args.force_all,
+                course_choice=course_choice,
+                retention_days=retention_days,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            return display(HTML(f'<div style="color: red;">❌ {e}</div>'))
+
+        # Render the success card.
+        if result.n_checkpoints == 0 and result.n_failed == 0:
+            return display(HTML(
+                '<div style="color: #b45309; border: 1px solid #b45309; padding: 10px; '
+                'border-radius: 6px; background: #fffbeb;">⚠ Found no exercise cells. '
+                'Either tag code cells with <code># cadence:checkpoint &lt;id&gt;</code> '
+                'or use markdown headings above your code cells (then re-run with '
+                '<code>--all</code> if you have manual markers elsewhere).</div>'
+            ))
+
+        ok_rows = "".join(
+            f'<tr><td style="padding: 2px 8px;"><code>{c.checkpoint_id}</code></td>'
+            f'<td style="padding: 2px 8px; color: #475569;">{c.comparator}</td>'
+            f'<td style="padding: 2px 8px; font-family: monospace;">'
+            f'{(json.dumps(c.expected.get("value")) if c.expected else "—")[:60]}</td></tr>'
+            for c in result.checkpoints if c.error is None
+        )
+        fail_html = ""
+        if result.n_failed:
+            fail_rows = "".join(
+                f'<li><code>{c.checkpoint_id or "?"}</code>: {c.error}</li>'
+                for c in result.checkpoints if c.error is not None
+            )
+            fail_html = (
+                f'<div style="margin-top: 8px; padding: 8px 10px; background: #fffbeb;'
+                f' border-left: 3px solid #b45309; font-size: 0.85em;">'
+                f'<strong>⚠ {result.n_failed} cell(s) skipped:</strong>'
+                f'<ul style="margin: 4px 0 0 0; padding-left: 20px;">{fail_rows}</ul>'
+                f'</div>'
+            )
+        reveal_html = (
+            f" · solutions reveal after {reveal_after} attempts" if reveal_after else ""
+        )
+        display(HTML(f'''
+            <div style="border: 1px solid #15803d; border-radius: 6px;
+                        padding: 12px 14px; margin: 8px 0; background: #f0fdf4;
+                        line-height: 1.5; color: #1f2937;">
+                <div style="font-weight: 600; color: #15803d; margin-bottom: 6px;">
+                    ✅ Wrote <code>{result.out_path}</code>
+                </div>
+                <div style="font-size: 0.9em; color: #475569; margin-bottom: 8px;">
+                    {result.n_checkpoints} checkpoint(s) detected ({result.mode} mode){reveal_html} ·
+                    lesson "<code>{result.lesson_name}</code>"
+                </div>
+                <table style="font-size: 0.85em; border-collapse: collapse; margin-top: 4px;">
+                    <thead><tr style="color: #475569;">
+                        <th style="text-align: left; padding: 2px 8px;">id</th>
+                        <th style="text-align: left; padding: 2px 8px;">comparator</th>
+                        <th style="text-align: left; padding: 2px 8px;">expected</th>
+                    </tr></thead>
+                    <tbody>{ok_rows}</tbody>
+                </table>
+                {fail_html}
+                <div style="margin-top: 10px; font-size: 0.85em; color: #475569;">
+                    Next: open <code>{result.out_path.name}</code>, run the setup cell at the
+                    top to register the lesson, then run <code>%cadence_scaffold</code> from
+                    inside it to produce the student notebook.
+                </div>
+            </div>
+        '''))
+
+    @magic_arguments()
+    @argument('src', nargs='?', default=None,
+              help='Path to the teacher notebook. Omit to auto-detect the current notebook.')
+    @argument('--out', default=None,
+              help='Output path (default: <src>_student.ipynb).')
+    @argument('--join-code', default=None,
+              help='Override the join code. Default: look up the cached lesson by name.')
+    @argument('--name', default='your name',
+              help='Placeholder for the student display name in the session cell.')
+    @argument('--force', action='store_true',
+              help='Overwrite the output file if it already exists.')
+    @line_magic
+    def cadence_scaffold(self, line):
+        """Generate a student notebook from a teacher notebook.
+
+        Picks up every `check("id", ...)` call as an exercise (stubs the body,
+        keeps the check call) and every markdown cell tagged with
+        `<!-- cadence:task -->` as a task description (copied verbatim). The
+        `%cadence_session <code> "name"` line is auto-filled from the lesson
+        cached in ~/.cadence/lessons.yaml.
+
+        Usage:
+            %cadence_scaffold                                  # auto-detect this notebook
+            %cadence_scaffold teacher.ipynb
+            %cadence_scaffold teacher.ipynb --out wk3-student.ipynb --force
+        """
+        from pathlib import Path
+        args = parse_argstring(self.cadence_scaffold, line)
+        if args.src:
+            src = Path(args.src)
+        else:
+            detected = _scaffold.detect_current_notebook()
+            if detected is None:
+                return display(HTML(
+                    '<div style="color: red;">❌ Could not auto-detect the current notebook. '
+                    'Pass the path explicitly: '
+                    '<code>%cadence_scaffold path/to/teacher.ipynb</code></div>'
+                ))
+            src = detected
+            display(HTML(
+                f'<div style="font-size: 0.85em; color: #475569; margin-bottom: 4px;">'
+                f'Auto-detected notebook: <code>{src}</code></div>'
+            ))
+        out = Path(args.out) if args.out else None
+        target = out or src.with_name(f"{src.stem}_student.ipynb")
+        if target.exists() and not args.force:
+            return display(HTML(
+                f'<div style="color: red;">❌ <code>{target}</code> already exists. '
+                f'Re-run with <code>--force</code> to overwrite.</div>'
+            ))
+        try:
+            result = _scaffold.scaffold(
+                src_path=src,
+                out_path=out,
+                join_code=args.join_code,
+                name_placeholder=args.name,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            return display(HTML(f'<div style="color: red;">❌ {e}</div>'))
+
+        # Live cross-check: if we have an active lesson, warn about ids that
+        # appear in check() calls but were never registered on the server.
+        unregistered = []
+        teacher = _progress.current_teacher()
+        if teacher and result.checkpoint_ids:
+            try:
+                registered = {
+                    cp["checkpoint_id"]
+                    for cp in self.api.list_checkpoints(teacher["teacher_token"])
+                }
+                unregistered = [cid for cid in result.checkpoint_ids if cid not in registered]
+            except Exception:
+                pass
+
+        warn_html = ""
+        if unregistered:
+            warn_html = (
+                f'<div style="margin-top: 6px; padding: 6px 10px;'
+                f' background: #fffbeb; border-left: 3px solid #b45309;'
+                f' font-size: 0.9em;">'
+                f'⚠ {len(unregistered)} checkpoint id(s) in the notebook are not '
+                f'registered on the active lesson yet — students will see '
+                f'"unknown checkpoint" when they submit. Register them with '
+                f'<code>%cadence_register</code> or '
+                f'<code>%%cadence_register_yaml</code>:<br>'
+                f'<code>{", ".join(unregistered[:8])}</code>'
+                f'{"…" if len(unregistered) > 8 else ""}'
+                f'</div>'
+            )
+
+        lesson_line = (
+            f"Lesson: <code>{result.lesson_name}</code> · join_code <code>{result.join_code}</code>"
+            if result.lesson_name
+            else f"join_code <code>{result.join_code}</code> (passed explicitly; no lesson magic in source)"
+        )
+        display(HTML(f'''
+            <div style="border: 1px solid #15803d; border-radius: 6px;
+                        padding: 10px; margin: 8px 0; background: #f0fdf4;">
+                <div style="font-weight: 600; color: #15803d;">
+                    ✅ Wrote <code>{result.out_path}</code>
+                </div>
+                <div style="margin-top: 4px; font-size: 0.9em;">
+                    {result.n_exercises} exercise stub(s)
+                    ({len(result.checkpoint_ids)} checkpoint(s)) ·
+                    {result.n_tasks} task description(s) ·
+                    {result.n_solutions} solution cell(s)<br>
+                    {lesson_line}
+                </div>
+                {warn_html}
+            </div>
+        '''))
 
     # ------------------------------------------------------------------
     # Teacher: register / self-test
@@ -2078,6 +2504,7 @@ class CadenceMagic(Magics):
                 course_name=resp["name"],
                 join_code=resp["join_code"],
                 api=self.api,
+                session_retention_days=resp.get("session_retention_days"),
             )
             self._render_course_card(resp, created=False)
             display(HTML(

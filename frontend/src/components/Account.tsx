@@ -16,7 +16,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useAuth } from '../contexts/AuthContext';
-import { closeMyAccount, setMyPassword, formatApiError } from '../services/api';
+import { closeMyAccount, deleteEverything, setMyPassword, formatApiError } from '../services/api';
 
 const Account: React.FC = () => {
   const navigate = useNavigate();
@@ -26,6 +26,12 @@ const Account: React.FC = () => {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Hard-delete flow uses its own dialog + typed-confirmation guard, separate
+  // from the soft-close one because the blast radius is different.
+  const [hardOpen, setHardOpen] = useState(false);
+  const [hardConfirmText, setHardConfirmText] = useState('');
+  const [hardError, setHardError] = useState<string | null>(null);
+  const [hardSubmitting, setHardSubmitting] = useState(false);
 
   // Password form state.
   const [currentPassword, setCurrentPassword] = useState('');
@@ -93,6 +99,19 @@ const Account: React.FC = () => {
     } catch (err: any) {
       setError(formatApiError(err, 'Could not close your account. Try again or email privacy@cadence-dash.com.'));
       setSubmitting(false);
+    }
+  };
+
+  const handleHardDelete = async () => {
+    setHardError(null);
+    setHardSubmitting(true);
+    try {
+      await deleteEverything();
+      signOut();
+      navigate('/', { replace: true });
+    } catch (err: any) {
+      setHardError(formatApiError(err, 'Could not delete everything. Try again or email privacy@cadence-dash.com.'));
+      setHardSubmitting(false);
     }
   };
 
@@ -197,19 +216,20 @@ const Account: React.FC = () => {
       <Card sx={{ mb: 3, borderColor: 'error.light', borderWidth: 1, borderStyle: 'solid' }}>
         <CardContent sx={{ p: 3 }}>
           <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 600, color: 'error.main' }}>
-            Close my account
+            Close my account (recoverable for 30 days)
           </Typography>
           <Stack spacing={1.5}>
             <Typography variant="body2">
-              Closing your account signs you out and marks the account for
-              deletion. Your account data is permanently removed after 30 days,
-              with backups ageing out within a further 30 days.
+              Signs you out and marks the account inactive. If you sign in again
+              within 30 days (e.g. via GitHub), the account is reactivated.
+              After 30 days the data is permanently removed, with backups
+              ageing out within a further 30 days.
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Courses you own remain functional via their teacher tokens — the
-              dashboard URLs you've shared with co-teachers keep working. If
-              you want to wipe the course data too, delete the course from the
-              dashboard <em>before</em> closing your account.
+              Courses you own remain functional via their teacher tokens during
+              the grace period — the dashboard URLs you've shared with co-teachers
+              keep working. To wipe everything immediately, use <strong>Delete
+              everything</strong> below instead.
             </Typography>
             {error && <Alert severity="error">{error}</Alert>}
             <Box>
@@ -227,13 +247,47 @@ const Account: React.FC = () => {
         </CardContent>
       </Card>
 
+      <Card sx={{ mb: 3, borderColor: 'error.main', borderWidth: 2, borderStyle: 'solid', bgcolor: '#fef2f2' }}>
+        <CardContent sx={{ p: 3 }}>
+          <Typography variant="subtitle1" sx={{ mb: 1.5, fontWeight: 700, color: 'error.dark' }}>
+            ⚠ Delete everything (permanent, immediate)
+          </Typography>
+          <Stack spacing={1.5}>
+            <Typography variant="body2">
+              Hard-deletes your account <strong>and</strong> every lesson,
+              course, student session, attempt, submission, and solution-reveal
+              you own. No grace period, no reactivation — by the time the
+              request returns, the data is gone. Dashboard URLs you've shared
+              will 404 immediately.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Use this when you want a clean break: cleaning up a test account,
+              ending a course permanently, or exercising your right to erasure
+              under GDPR / similar laws.
+            </Typography>
+            {hardError && <Alert severity="error">{hardError}</Alert>}
+            <Box>
+              <Button
+                variant="contained"
+                color="error"
+                onClick={() => { setHardConfirmText(''); setHardError(null); setHardOpen(true); }}
+                disabled={hardSubmitting}
+                sx={{ textTransform: 'none' }}
+              >
+                Delete everything
+              </Button>
+            </Box>
+          </Stack>
+        </CardContent>
+      </Card>
+
       <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
         <DialogTitle>Close account?</DialogTitle>
         <DialogContent>
           <DialogContentText>
             Are you sure? You'll be signed out immediately. Your account data
-            will be permanently deleted in 30 days. This cannot be undone after
-            that window.
+            will be permanently deleted in 30 days unless you sign in again
+            within that window.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
@@ -248,6 +302,42 @@ const Account: React.FC = () => {
             sx={{ textTransform: 'none' }}
           >
             {submitting ? 'Closing…' : 'Yes, close my account'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={hardOpen} onClose={() => setHardOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ color: 'error.dark' }}>Delete everything — type to confirm</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            This wipes your account <strong>and</strong> every lesson, course,
+            session, attempt, submission, and solution-reveal you own.
+            <strong> There is no undo and no recovery window.</strong>
+          </DialogContentText>
+          <DialogContentText sx={{ mb: 1 }}>
+            Type <code>{teacher.username}</code> below to confirm:
+          </DialogContentText>
+          <TextField
+            value={hardConfirmText}
+            onChange={(e) => setHardConfirmText(e.target.value)}
+            placeholder={teacher.username}
+            size="small"
+            fullWidth
+            autoFocus
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setHardOpen(false)} sx={{ textTransform: 'none' }}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleHardDelete}
+            color="error"
+            variant="contained"
+            disabled={hardSubmitting || hardConfirmText !== teacher.username}
+            sx={{ textTransform: 'none' }}
+          >
+            {hardSubmitting ? 'Deleting…' : 'Permanently delete everything'}
           </Button>
         </DialogActions>
       </Dialog>

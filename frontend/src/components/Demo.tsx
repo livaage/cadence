@@ -19,11 +19,18 @@ import { Link as RouterLink } from 'react-router-dom';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
-// Stable token + join code seeded by backend/seed_demo.py. Anyone who opens this
-// URL sees the read-only teacher dashboard for the demo lesson — no signup.
+// Stable tokens + join codes seeded by backend/seed_demo.py. All read-only —
+// anyone who opens these URLs sees the dashboards with no signup required.
 const DEMO_TEACHER_TOKEN = 'demo-particle-physics-readonly-2026';
 const DEMO_JOIN_CODE = 'demo-physics';
 const DEMO_DASHBOARD_URL = `/teacher/live?token=${DEMO_TEACHER_TOKEN}`;
+
+// Two example courses to show what a teacher's library typically looks like —
+// not just one standalone lesson but grouped notebooks across multiple classes.
+const STATS_COURSE_TOKEN = 'demo-stats-course-readonly-2026';
+const STATS_COURSE_URL = `/teacher/course?token=${STATS_COURSE_TOKEN}`;
+const NUMERICS_COURSE_TOKEN = 'demo-numerics-course-readonly-2026';
+const NUMERICS_COURSE_URL = `/teacher/course?token=${NUMERICS_COURSE_TOKEN}`;
 
 type NotebookCell = {
   cell_type: 'markdown' | 'code' | string;
@@ -44,25 +51,18 @@ type DemoSpec = {
 
 const DEMOS: DemoSpec[] = [
   {
-    slug: 'before',
-    title: 'Before Cadence',
-    subtitle: 'A vanilla student notebook — no tracking, no dashboard.',
-    file: '/demos/demo-before-cadence.ipynb',
-    badge: 'plain',
-  },
-  {
-    slug: 'with',
-    title: 'With Cadence (student)',
-    subtitle: 'Same lab, two extra lines. Progress goes to the live dashboard.',
-    file: '/demos/demo-with-cadence.ipynb',
-    badge: 'student',
-  },
-  {
     slug: 'teacher',
     title: 'Teacher setup',
     subtitle: 'Run once to mint the lesson, register checkpoints, and print the join code.',
     file: '/demos/demo-teacher-setup.ipynb',
     badge: 'teacher',
+  },
+  {
+    slug: 'with',
+    title: 'Student notebook',
+    subtitle: 'What students see and run — progress streams to the live dashboard.',
+    file: '/demos/demo-with-cadence.ipynb',
+    badge: 'student',
   },
 ];
 
@@ -424,6 +424,39 @@ const Demo: React.FC = () => {
               sx={{ flexShrink: 0, alignSelf: { sm: 'center' } }}
             >
               Open dashboard
+            </Button>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card sx={{ mb: 3 }}>
+        <CardContent sx={{ p: { xs: 2.5, sm: 3.5 } }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+            What a real teacher's library looks like
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Most teachers run more than one class at a time. Two example courses
+            below — each grouping two notebooks — show the multi-notebook course
+            view that lives next to the standalone-lesson view above.
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+            <Button
+              variant="outlined"
+              endIcon={<LaunchIcon />}
+              component={RouterLink as any}
+              to={STATS_COURSE_URL}
+              sx={{ flex: 1, justifyContent: 'space-between', textTransform: 'none' }}
+            >
+              Intro to Statistics — Fall 2026
+            </Button>
+            <Button
+              variant="outlined"
+              endIcon={<LaunchIcon />}
+              component={RouterLink as any}
+              to={NUMERICS_COURSE_URL}
+              sx={{ flex: 1, justifyContent: 'space-between', textTransform: 'none' }}
+            >
+              Numerical Methods — Spring 2026
             </Button>
           </Stack>
         </CardContent>

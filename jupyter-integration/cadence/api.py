@@ -289,12 +289,15 @@ class CadenceAPI:
         name: str,
         join_code: Optional[str] = None,
         teacher_token: Optional[str] = None,
+        session_retention_days: Optional[int] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"name": name}
         if join_code:
             body["join_code"] = join_code
         if teacher_token:
             body["teacher_token"] = teacher_token
+        if session_retention_days is not None:
+            body["session_retention_days"] = session_retention_days
         return self._make_request("POST", "/lessons", body)
 
     def get_lesson_by_token(self, teacher_token: str) -> Dict[str, Any]:

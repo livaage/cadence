@@ -11,13 +11,20 @@ const AuthCallback: React.FC = () => {
 
   useEffect(() => {
     // The backend redirects us with the JWT in the URL fragment to keep it out
-    // of server logs and Referer headers. Format: #token=<jwt>
+    // of server logs and Referer headers. Format: #token=<jwt>&status=<status>
     const fragment = window.location.hash.replace(/^#/, '');
     const params = new URLSearchParams(fragment);
     const token = params.get('token');
+    const status = params.get('status');  // created | signed_in | linked | reactivated
     if (!token) {
       setError('No token in callback URL. The OAuth flow did not complete correctly.');
       return;
+    }
+    // Stash status across the navigation — the destination page reads it
+    // once and clears it. Doing this in sessionStorage instead of the URL so
+    // it doesn't sit in the address bar after the redirect.
+    if (status) {
+      sessionStorage.setItem('auth_status', status);
     }
     // Wipe the fragment so the JWT doesn't sit in the browser's URL bar.
     window.history.replaceState(null, '', window.location.pathname);

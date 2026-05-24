@@ -1,16 +1,16 @@
 # Cadence — deploy plan (GCP)
 
-Target: Cloud Run (backend) + Cloud SQL Postgres + Firebase Hosting (frontend).
+Target: Cloud Run (backend + frontend nginx) + Cloud SQL Postgres.
 Estimated wall-clock time: **60–90 minutes** first time, mostly waiting for the SQL
 instance to provision. Subsequent deploys are `git push`-grade fast.
 
 Conventions used below:
-- `<PROJECT_ID>` — pick a globally-unique GCP project ID (e.g. `cadence-prod-2026`).
+- `cadence-497021` — pick a globally-unique GCP project ID (e.g. `cadence-497021`).
 - `<REGION>` — pick one close to your students. `us-central1` is cheapest and the
   default in the plan.
 - `<DB_PASSWORD>` — generate one (`openssl rand -base64 24` is fine).
 - `<DOMAIN>` — optional custom domain. Skip the domain section if you're okay
-  with the auto-generated `.run.app` and `.web.app` URLs.
+  with the auto-generated `.run.app` URLs.
 
 ---
 
@@ -38,7 +38,7 @@ Commit this before you build.
    you want to bill against.
 2. **Create a new project**: top bar → "Select a project" → "NEW PROJECT".
    Name it `Cadence` (or whatever); the project ID will auto-generate or you
-   can override it. Note the project ID — that's `<PROJECT_ID>` below.
+   can override it. Note the project ID — that's `cadence-497021` below.
 3. **Enable billing**: Billing → Link a billing account → add a credit card.
    You'll get the $300 / 90-day free trial automatically.
 4. **Enable the APIs** you'll need. Either click each link below, or run the
@@ -56,7 +56,7 @@ Commit this before you build.
 brew install --cask google-cloud-sdk
 gcloud init                           # log in, pick the project
 gcloud auth configure-docker us-central1-docker.pkg.dev
-gcloud config set project <PROJECT_ID>
+gcloud config set project cadence-497021
 gcloud config set run/region us-central1
 
 # Enable the APIs in one shot
@@ -92,7 +92,7 @@ When this finishes, grab the **connection name** — you'll need it for Cloud Ru
 
 ```bash
 gcloud sql instances describe cadence-db --format="value(connectionName)"
-# Example output: cadence-prod-2026:us-central1:cadence-db
+# Example output: cadence-497021:us-central1:cadence-db
 ```
 
 Save that as `<SQL_CONNECTION_NAME>`.
@@ -112,7 +112,7 @@ gcloud artifacts repositories create cadence \
   --description="Cadence container images"
 ```
 
-Your image URL will be `us-central1-docker.pkg.dev/<PROJECT_ID>/cadence/backend`.
+Your image URL will be `us-central1-docker.pkg.dev/cadence-497021/cadence/backend`.
 
 ---
 
@@ -123,7 +123,7 @@ From the project root:
 ```bash
 # Cloud Build does the docker build remotely so you don't need a fast machine
 gcloud builds submit ./backend \
-  --tag us-central1-docker.pkg.dev/<PROJECT_ID>/cadence/backend:v1
+  --tag us-central1-docker.pkg.dev/cadence-497021/cadence/backend:v1
 ```
 
 This uploads `./backend/` to Cloud Build, builds the image using your
@@ -151,12 +151,12 @@ Then deploy:
 
 ```bash
 gcloud run deploy cadence-backend \
-  --image us-central1-docker.pkg.dev/<PROJECT_ID>/cadence/backend:v1 \
+  --image us-central1-docker.pkg.dev/cadence-497021/cadence/backend:v1 \
   --region us-central1 \
   --allow-unauthenticated \
   --add-cloudsql-instances <SQL_CONNECTION_NAME> \
   --set-env-vars "DATABASE_URL=postgresql+psycopg2://cadence_user:<DB_PASSWORD>@/cadence?host=/cloudsql/<SQL_CONNECTION_NAME>" \
-  --set-env-vars "CADENCE_CORS_ORIGINS=https://cadence-dash.com,https://<PROJECT_ID>.web.app,https://<PROJECT_ID>.firebaseapp.com" \
+  --set-env-vars "CADENCE_CORS_ORIGINS=https://cadence-dash.com" \
   --set-env-vars "CADENCE_WEB_URL=https://cadence-dash.com" \
   --set-env-vars "JWT_SECRET_KEY=$JWT_SECRET" \
   --set-env-vars "CLEANUP_SECRET=$CLEANUP_SECRET" \
@@ -295,75 +295,83 @@ gcloud scheduler jobs update http cadence-cleanup \
 
 ---
 
-## 7. Build the frontend with the prod API URL (~2 min)
+## 7. Build + deploy the frontend container (~3–5 min first time)
+
+The frontend builds the CRA bundle *inside* the container — see
+`frontend/Dockerfile`. `REACT_APP_API_URL` is hardcoded in that Dockerfile
+(currently `https://api.cadence-dash.com`); update the `ENV` line there if
+the backend moves.
 
 ```bash
-cd frontend
-REACT_APP_API_URL=<BACKEND_URL> npm run build
+gcloud builds submit ./frontend \
+  --tag us-central1-docker.pkg.dev/cadence-497021/cadence/frontend:v3
+
+gcloud run deploy cadence-frontend \
+  --image us-central1-docker.pkg.dev/cadence-497021/cadence/frontend:v3 \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --memory 256Mi \
+  --cpu 1 \
+  --min-instances 0 \
+  --max-instances 5 \
+  --port 8080
 ```
 
-This produces `frontend/build/` — static HTML/JS/CSS bundles that talk to your
-deployed backend.
+Output ends with **Service URL: https://cadence-frontend-xxxxx-uc.a.run.app** —
+the Cloud Run service. The public domain `https://cadence-dash.com` is mapped
+to this service via Cloud Run domain mappings (already configured).
+
+The nginx config inside the image handles the SPA fallback (React Router) and
+sets long-cache headers on fingerprinted assets — no separate hosting config
+needed.
 
 ---
 
-## 8. Deploy frontend to Firebase Hosting (~5 min one-time + ~30s per deploy)
+## 8. Verify CORS is happy (~1 min)
 
-```bash
-npm install -g firebase-tools
-firebase login
-firebase init hosting
-#   - Use an existing project → pick <PROJECT_ID>
-#   - Public directory: build
-#   - Single-page app: Yes (rewrites all routes to /index.html for React Router)
-#   - GitHub auto-deploys: No (we'll do it manually for now)
-#   - Overwrite build/index.html: No
-
-firebase deploy --only hosting
-```
-
-Output ends with **Hosting URL: https://<PROJECT_ID>.web.app**.
-
-Open it. You should see the Welcome page, and clicking "About" / "Guide" / "Library" should all work (because React Router handles routing client-side, and the Firebase SPA rewrite ensures direct hits to `/guide` etc. serve `index.html`).
-
----
-
-## 9. Verify CORS is happy (~1 min)
-
-The backend deploy in step 6 already set `CADENCE_CORS_ORIGINS` to your Firebase
-URL. If you change the frontend's deployed URL (e.g. add a custom domain),
-update the env var:
+The backend deploy in step 6 already set `CADENCE_CORS_ORIGINS` to the
+production frontend URL. If you change the frontend's deployed URL (e.g. add
+a new custom domain), update the env var:
 
 ```bash
 gcloud run services update cadence-backend \
   --region us-central1 \
-  --update-env-vars "CADENCE_CORS_ORIGINS=https://<PROJECT_ID>.web.app,https://<DOMAIN>"
+  --update-env-vars "CADENCE_CORS_ORIGINS=https://cadence-dash.com,https://<DOMAIN>"
 ```
 
 ---
 
-## 10. Full smoke test
+## 9. Full smoke test
 
 From the deployed frontend:
-1. Open `https://<PROJECT_ID>.web.app/guide` — guide should render.
-2. Open `https://<PROJECT_ID>.web.app/teacher/library` — library page should render with the demo-seed button.
+1. Open `https://cadence-dash.com/guide` — guide should render.
+2. Open `https://cadence-dash.com/teacher/library` — library page should render with the demo-seed button.
 3. Click the seed button — you should land on a populated dashboard.
 4. From your local machine, install the jupyter integration pointed at prod:
    ```bash
    pip install -e ./jupyter-integration
-   export CADENCE_API_URL=<BACKEND_URL>
+   export CADENCE_API_URL=https://api.cadence-dash.com
    jupyter notebook demo-with-cadence.ipynb
    ```
    Run the cells; the dashboard should update in real time.
 
 ---
 
-## 11. (Optional) Custom domain — ~30 min, mostly waiting for DNS
+## 10. (Optional) Custom domain — ~30 min, mostly waiting for DNS
 
-In the Firebase console: Hosting → Add custom domain → enter `<DOMAIN>` → follow
-the DNS instructions (typically two A records). Firebase handles TLS for you.
+Cloud Run custom domains are managed via the gcloud CLI or the Cloud Console
+(Cloud Run → service → "Manage Custom Domains"). `cadence-dash.com` is
+already mapped to `cadence-frontend`. For an additional domain:
 
-After DNS propagates (often <1h), update CORS as in step 9.
+```bash
+gcloud beta run domain-mappings create \
+  --service cadence-frontend \
+  --domain <DOMAIN> \
+  --region us-central1
+```
+
+Add the CNAME / A records it prints to your DNS, wait for TLS to provision,
+then update CORS as in step 8.
 
 ---
 
@@ -372,9 +380,9 @@ After DNS propagates (often <1h), update CORS as in step 9.
 Backend changes:
 ```bash
 gcloud builds submit ./backend \
-  --tag us-central1-docker.pkg.dev/<PROJECT_ID>/cadence/backend:v2
+  --tag us-central1-docker.pkg.dev/cadence-497021/cadence/backend:v2
 gcloud run deploy cadence-backend \
-  --image us-central1-docker.pkg.dev/<PROJECT_ID>/cadence/backend:v2 \
+  --image us-central1-docker.pkg.dev/cadence-497021/cadence/backend:v2 \
   --region us-central1
 # If you added a new migration, apply it via cloud_sql_proxy as in step 6a
 # *before* the deploy that needs the new schema.
@@ -382,17 +390,24 @@ gcloud run deploy cadence-backend \
 
 Frontend changes:
 ```bash
-cd frontend && REACT_APP_API_URL=<BACKEND_URL> npm run build
-firebase deploy --only hosting
+gcloud builds submit ./frontend \
+  --tag us-central1-docker.pkg.dev/cadence-497021/cadence/frontend:v2
+gcloud run deploy cadence-frontend \
+  --image us-central1-docker.pkg.dev/cadence-497021/cadence/frontend:v2 \
+  --region us-central1
+# If api.cadence-dash.com moves, edit ENV REACT_APP_API_URL in frontend/Dockerfile
+# *before* the build — it's baked into the static bundle.
 ```
 
-Rollback (backend):
+Rollback (either service):
 ```bash
-gcloud run services update-traffic cadence-backend \
-  --to-revisions cadence-backend-00001-abc=100  # use a previous revision ID
+gcloud run services update-traffic cadence-{backend,frontend} \
+  --region us-central1 \
+  --to-revisions <previous-revision-id>=100
 ```
 
-(Firebase keeps deploy history too: console → Hosting → release history → "Rollback".)
+Cloud Run keeps every revision; the console's Revisions tab is the easiest
+way to find the previous one.
 
 ---
 
@@ -415,9 +430,9 @@ gcloud run services update-traffic cadence-backend \
 
 Once the $300 / 90-day credit runs out (~mid-August 2026):
 
-- Cloud Run (backend): **~$0** under expected load (well within free tier).
+- Cloud Run (backend + frontend): **~$0** under expected load (both well within free tier; min-instances=0).
 - Cloud SQL (smallest tier): **~$15-25/month** — the dominant cost.
-- Firebase Hosting: **$0** (free tier covers a class easily).
+- Artifact Registry storage: **~$0** for a handful of image versions.
 - Egress: **~$0** for this workload.
 
 Budget **~$25/month** to keep it live indefinitely. Set a billing alert at

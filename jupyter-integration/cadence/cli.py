@@ -13,7 +13,7 @@ import os
 import click
 import nbformat as nbf
 
-from . import lesson_store, notebook_starters
+from . import lesson_store, notebook_starters, scaffold as _scaffold
 from .api import CadenceAPI
 
 
@@ -164,6 +164,52 @@ def lessons_rotate(name, course, also_join_code):
     click.echo(f"   new dashboard = {api.base_url.replace(':8000', ':3000').rstrip('/')}"
                f"/teacher/{'course' if inferred_course else 'live'}"
                f"?token={resp['teacher_token']}")
+
+
+@main.command("scaffold")
+@click.argument("src", type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", "out_path", default=None,
+              help="Output path (default: <src>_student.ipynb next to the source).")
+@click.option("--join-code", "join_code", default=None,
+              help="Override the join code. Default: look up from "
+                   "~/.cadence/lessons.yaml by the lesson name in the source notebook.")
+@click.option("--name", "name_placeholder", default="your name",
+              help="Placeholder for the student's display name in the session cell.")
+@click.option("--force", is_flag=True, help="Overwrite the output if it already exists.")
+def scaffold_cmd(src, out_path, join_code, name_placeholder, force):
+    """Generate a student notebook from a teacher's notebook.
+
+    Picks up every `check("id", ...)` call as an exercise, every markdown
+    cell tagged with `<!-- cadence:task -->` as a task description, and
+    auto-fills the `%cadence_session` join code from the cached lesson."""
+    from pathlib import Path
+    out = Path(out_path) if out_path else Path(src).with_name(
+        f"{Path(src).stem}_student.ipynb"
+    )
+    if out.exists() and not force:
+        click.echo(f"❌ {out} already exists. Re-run with --force to overwrite.")
+        raise SystemExit(1)
+    try:
+        result = _scaffold.scaffold(
+            src_path=Path(src),
+            out_path=out,
+            join_code=join_code,
+            name_placeholder=name_placeholder,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"❌ {e}")
+        raise SystemExit(1)
+    click.echo(f"✅ Wrote {result.out_path}")
+    click.echo(
+        f"   {result.n_exercises} exercise stub(s) "
+        f"({len(result.checkpoint_ids)} checkpoint(s)) · "
+        f"{result.n_tasks} task description(s) · "
+        f"{result.n_solutions} solution cell(s)"
+    )
+    if result.lesson_name:
+        click.echo(f"   Lesson: {result.lesson_name}  ·  join_code={result.join_code}")
+    else:
+        click.echo(f"   join_code={result.join_code} (no lesson magic found; passed explicitly)")
 
 
 if __name__ == "__main__":

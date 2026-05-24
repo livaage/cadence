@@ -72,83 +72,280 @@ The teacher's dashboard updates live as students submit. That's the whole produc
 | **Checkpoint** | One expected answer in a lesson. Has an ID, a comparator (`exact`/`numeric`/`set`/`regex`/`manual`), an optional hint, and an optional worked solution. Registered with `%cadence_register`. |
 | **Session** | A student's enrollment in a lesson or course. Started with `%cadence_session <code> "<name>"`. |
 
+### Markers vs magics — the discipline
+
+Cadence has two kinds of syntax. The rule is simple and worth holding in mind
+because every other detail follows from it.
+
+| | Form | Purpose | Examples |
+|---|---|---|---|
+| **Markers** | Comments — `# cadence:foo` in code cells, `<!-- cadence:foo -->` in markdown cells | *Static metadata.* They label what a cell IS. They never do anything when you run the cell — they sit there waiting for tools to read them. | `# cadence:checkpoint setup.arange`<br>`# cadence:solution`<br>`# cadence:hint: try ...`<br>`<!-- cadence:task setup.arange -->` |
+| **Magics** | Jupyter line/cell magics — `%cadence_foo` / `%%cadence_foo` | *Actions.* They DO something now: talk to the server, read your notebook, write a file. | `%cadence_create_lesson "..."`<br>`%cadence_autoregister`<br>`%cadence_scaffold`<br>`%%cadence_register_yaml` |
+
+So when you see `# cadence:checkpoint mean.basic`, it doesn't talk to any
+server — it just labels the cell. When you see `%cadence_autoregister`, it's
+doing work in real time and might prompt you.
+
 ---
 
 ## Teacher workflow
 
-### Creating a single lesson (no account needed)
+### The recommended path: `%cadence_autoregister`
+
+You already have (or are writing) a notebook with worked solutions. The
+fastest path from "I have a teaching notebook" to "I have a live class"
+is one magic and one prompt-walkthrough — `%cadence_autoregister`.
+
+Concretely: in your existing teaching notebook, run all cells end-to-end
+so your answer variables exist in the kernel, then in a new cell at the
+bottom run:
 
 ```python
 %load_ext cadence
-%cadence_create_lesson "Week 3: Fibonacci"
+%cadence_autoregister
 ```
 
-The first run creates the lesson and caches the teacher token in `~/.cadence/lessons.yaml`. Re-running with the same name reactivates the cached lesson — safe to run at the top of every notebook session. Use `--force` if you genuinely want a second lesson with the same name (different token, different join code).
+It walks you through three prompts:
 
-### Creating a course of lessons (account required)
+1. **Reveal solutions to students after N attempts?** Empty → no reveals.
+2. **Sign in to track this lesson under your account?** (Only asked if
+   you aren't already signed in.) Required for courses, optional otherwise.
+3. **Add this lesson to a course?** Only asked if you're signed in. Empty
+   for standalone; a course name to attach to an existing one; or
+   `new: <name>` to create a new course.
+4. **How many days to keep each student's data?** Empty → 7 days for a
+   standalone lesson, 90 days for a course.
+
+It writes `<your_notebook>_registered.ipynb`. Open it, do "Run All", and
+the final cell — also generated for you — calls `%cadence_scaffold`,
+which writes `<your_notebook>_registered_student.ipynb`. That's the file
+you share with students.
+
+**Two ways to tell autoregister which cells are exercises**, and you can
+mix them:
+
+- **Explicit (recommended for control):** put `# cadence:checkpoint <id>`
+  at the top of each solution cell.
+- **Implicit (works on a vanilla notebook):** if you have *no* checkpoint
+  markers, autoregister pairs every markdown-heading cell with the code
+  cell that follows it as an exercise. The id is slugified from the
+  heading. Pass `--all` to force this even when manual markers exist.
+
+In either case, the answer value is read from the kernel namespace, the
+comparator is inferred from its type, and a `%cadence_register …` line
+gets injected at the top of the exercise cell — so when you scroll past
+an exercise the registration sits right above the code that produced it.
+No giant YAML block at the top to maintain.
+
+Comparator inference:
+
+| Value | Comparator | Notes |
+|---|---|---|
+| `int`, `float`, numpy scalar | `numeric` (tolerance 0.001) | |
+| `str` | `exact` | text answers — punctuation matters |
+| `bool` | `exact` | |
+| `list`, `tuple`, numpy array | `set` (order-insensitive) | override per-exercise with `# cadence:checkpoint <id> exact` for ordered match |
+| `set` | `set` | |
+| (override) | `manual` | `# cadence:checkpoint <id> manual` — free-text reflection, no value extracted, student self-attests with `mark_done` |
+
+#### How autoregister decides — the rules
+
+Two questions per cell: *is this an exercise?* and *what's the answer?*
+Stated explicitly so you can tell at a glance whether your notebook is
+going to autoregister cleanly or whether you need explicit markers.
+
+**Is this cell an exercise?**
+
+- **Explicit mode** (any cell has `# cadence:checkpoint`): exercise iff
+  the cell has that marker. Every other code cell is treated as setup
+  and copied verbatim. The markdown cell directly above an exercise
+  becomes its task description (if there is one).
+- **Auto mode** (no checkpoint markers in the notebook): exercise iff
+  (a) a markdown cell with a heading sits above it, claimed by no
+  earlier code cell, **and** (b) its extracted value is a "primitive
+  answer type" (`int`, `float`, `str`, `bool`, list/tuple/set of those,
+  numpy scalar / array). If either fails, the cell is treated as
+  setup and copied verbatim.
+- **Pure-import cells and magic-only cells** are always treated as setup
+  regardless of mode.
+- **Pass `--all`** to autoregister to force auto mode even when manual
+  markers exist (useful for a quick first pass on a notebook you're
+  about to add markers to).
+
+**What's the answer?**
+
+Autoregister parses the cell's AST and looks at the **last statement**:
+
+| Last statement | What gets used as the answer |
+|---|---|
+| A bare expression (Jupyter display style) — e.g. `arr.mean()` on its own line | The value of that expression, looked up in the live kernel namespace. |
+| An assignment to a single name — e.g. `mean_value = arr.mean()` | The current value of `mean_value` in the kernel namespace. |
+| An augmented assignment — `total += 1` | The current value of `total` in the kernel. |
+| Anything else (an `if`/`for`/`def`/import-only ending, multi-target assignment, etc.) | Autoregister errors with a teacher-friendly message asking you to end the cell with the answer on its own line. |
+
+In all cases the value comes from the **live kernel** — you must have
+run the cell (and the cells before it) end-to-end before invoking
+`%cadence_autoregister`. If a referenced variable isn't defined, you
+get a clear error pointing at which cell and which variable.
+
+**Common notebook shapes and what happens:**
+
+| Shape | Outcome |
+|---|---|
+| Heading → markdown explanation → solution cell → heading → solution cell ... | Clean pairing in auto mode; one exercise per heading. |
+| Multiple solution cells under one heading | Only the **first** code cell under each heading becomes the exercise; the rest are treated as setup (copied verbatim). Add explicit `# cadence:checkpoint` markers if you want each one to be a separate checkpoint. |
+| Code cells without any preceding heading | Treated as setup, copied verbatim. Most often this is imports, helper functions, or data loading — exactly the right outcome. |
+| Lots of cells with no clear heading structure | Auto mode will find few or no exercises and emit *"⚠ Found no exercise cells."* Drop `# cadence:checkpoint <id>` markers on the cells you want, and re-run. Manual mode doesn't need any heading at all. |
+| A "Setup" or "Imports" section under a heading | Auto-mode silently treats it as setup because the value isn't a primitive (a Generator / DataFrame / module). No special syntax needed. |
+| Exercise that should be free-text (a reflection) | Mark explicitly: `# cadence:checkpoint reflect manual`. Autoregister skips value extraction and registers as `manual`. |
+
+**Validating the result.** The card autoregister prints lists every
+detected checkpoint with its inferred id / comparator / expected. Read
+it before opening the registered notebook — if anything looks wrong
+(an id slugged oddly, a comparator inferred the wrong way), the fix is
+usually one explicit `# cadence:checkpoint <id> [<comparator>]` marker
+on the offending cell. Re-running autoregister is cheap and
+idempotent.
+
+### The marker toolkit
+
+All markers are **comments** (so they're inert at runtime — Cadence just
+reads them when scaffolding). They label *what a cell is* for tooling;
+magics (`%cadence_*`) are what *do* something. The set you can reach for:
+
+| Marker | Where | What it does |
+|---|---|---|
+| `# cadence:checkpoint <id> [<comparator>]` | Top of a code cell | Marks this cell as exercise `<id>`. Optional second word overrides the inferred comparator (e.g. `manual`, `exact`). |
+| `<!-- cadence:task [<id>] -->` | Markdown cell | Marks the markdown as task prose. If an id is given, the next code cell becomes the exercise stub for that id (and `# cadence:checkpoint` isn't needed). |
+| `# cadence:hint: <text>` | Inside an exercise cell | Becomes the hint for that checkpoint. Markdown allowed — backticks, code fences, `**bold**`. |
+| `# cadence:starter` … `# cadence:end` | Inside an exercise code cell | The region between becomes the student stub body (instead of `# Your code here`). Good for multi-step problems. Anything outside the markers is treated as the teacher's reference and stripped. |
+| `# cadence:solution` | Top of a code cell | Copy this code cell verbatim into the student notebook. Use for shared setup, an explainer snippet, or a worked solution you want students to see. |
+| `# cadence:hide` … `# cadence:end` | Inside a code cell | The region between is stripped from **both** the registered teacher notebook and the student notebook — purely teacher-side authoring notes. |
+| `<!-- cadence:hide -->` … `<!-- cadence:end -->` | Inside a markdown cell | Same — strips a private aside from inside an otherwise-public markdown cell (e.g. "this trips up students because…" inside an exercise description). |
+
+The "ad hoc content for students" cases all fall out of this toolkit:
+
+- **Extra code only the student sees** → put it in its own cell, top-tag it `# cadence:solution`.
+- **Extra prose only the student sees** → markdown cell with `<!-- cadence:task -->` (no id needed) or just a heading.
+- **Stuff only the *teacher* sees** → wrap in `cadence:hide` (in either code or markdown).
+- **Starter code inside an exercise stub** → wrap your scaffolded structure in `cadence:starter` / `cadence:end`.
+
+### Alternative registration paths
+
+`%cadence_autoregister` is the recommended path. The original mechanisms
+all still work, in case one of them fits your workflow better:
+
+- **YAML in a cell** — `%%cadence_register_yaml` followed by a YAML list
+  of checkpoints. Good when you want to type expected values explicitly
+  rather than have them inferred from kernel state, or when you have no
+  obvious "answer variable" to extract:
+
+  ```python
+  %%cadence_register_yaml
+  - id: setup.mean-value
+    comparator: numeric
+    expected: {value: 49.5, tolerance: 0.001}
+    hint: "average of 0..99"
+  - id: discovery.higgs-peak
+    comparator: exact
+    expected: 125
+    reveal_after: 3
+    solution_code: |
+      bin_edges = np.arange(100, 151)
+      counts, _ = np.histogram(m_gg, bins=bin_edges)
+      int(bin_edges[np.argmax(counts)])
+    allow_submissions: true
+  ```
+
+- **YAML in a file** — `%cadence_register_yaml_file checkpoints/week3.yaml`.
+  Use when checkpoint definitions belong in version control alongside the
+  notebook (PR-reviewable rubric changes; many notebooks sharing one
+  rubric).
+
+- **Inline per-checkpoint** — `%cadence_register <id> --comparator … --expected …`.
+  Useful for quick fixes mid-class or one-checkpoint demos. The full
+  flag set:
+
+  ```python
+  %cadence_register fib-10 \
+      --comparator numeric \
+      --expected '{"value": 55, "tolerance": 0.001}' \
+      --hint "Remember: fib(0)=0, fib(1)=1." \
+      --reveal-after 3 \
+      --solution-value "55" \
+      --order 2
+  ```
+
+- **Python API** — `cadence.api.CadenceAPI().register_checkpoint(...)`.
+  Use when generating checkpoints programmatically (per-student randomized
+  variants; CI lesson-prep scripts).
+
+Comparators across all forms:
+
+| Comparator | `--expected` / `expected:` | Match rule |
+|---|---|---|
+| `exact` | `'"hello"'` or `{value: "hello"}` | `str(submitted).strip() == str(value).strip()` |
+| `numeric` | `{value: 55}` or `{value: 3.14, tolerance: 0.001}` | `abs(submitted - value) <= tolerance` |
+| `set` | `{value: [1, 2, 3]}` | `set(submitted) == set(value)` (order-independent) |
+| `regex` | `{pattern: "^[A-Z].*"}` | `re.match(pattern, str(submitted))` |
+| `manual` | (none) | Student self-attests with `mark_done("id")` |
+
+### Creating courses
+
+`%cadence_autoregister`'s third prompt covers the common case (attach this
+lesson to a course, or create a new one). If you'd rather do it explicitly:
 
 ```python
 %load_ext cadence
-%cadence_login                    # prompts for username + password
-                                  # or: %cadence_login --token <jwt>
-%cadence_whoami                   # confirm who's logged in
-                                  # %cadence_logout clears the cached JWT
+%cadence_login                    # required for courses
 
 %cadence_create_course "Fall 2026 Statistics"
 %cadence_add_notebook "Week 1 — Variables"
 %cadence_add_notebook "Week 2 — Distributions"
 ```
 
-`%cadence_add_notebook` creates a brand-new lesson *inside* the active course. To pull in a lesson you already created standalone, use `%cadence_attach_lesson "My Lesson" --to "Fall 2026 Statistics"`.
+`%cadence_add_notebook` creates a fresh lesson inside the active course
+and inherits the course's retention. To pull in a lesson you already
+created standalone, use
+`%cadence_attach_lesson "My Lesson" --to "Fall 2026 Statistics"`.
 
-The first lesson or course creation prompts inline to accept the Terms of Service; if you'd rather accept up front in a script, run `%cadence_accept_terms` first.
+### Generating the student notebook (`%cadence_scaffold`)
 
-### Registering checkpoints
-
-```python
-%cadence_register fib-10 \
-    --comparator numeric \
-    --expected '{"value": 55, "tolerance": 0.001}' \
-    --hint "Remember: fib(0)=0, fib(1)=1." \
-    --order 2
-```
-
-Comparators and the `--expected` shape they take:
-
-| Comparator | `--expected` | Match rule |
-|---|---|---|
-| `exact` | `'"hello"'` or `'{"value": "hello"}'` | `str(submitted).strip() == str(value).strip()` |
-| `numeric` | `'{"value": 55}'` or `'{"value": 3.14, "tolerance": 0.001}'` | `abs(submitted - value) <= tolerance` |
-| `set` | `'{"value": [1, 2, 3]}'` | `set(submitted) == set(value)` (order-independent) |
-| `regex` | `'{"pattern": "^[A-Z].*"}'` | `re.match(pattern, str(submitted))` |
-| `manual` | (none) | Student self-attests with `mark_done("id")` |
-
-Re-running `%cadence_register` with the same ID updates the checkpoint in place.
-
-**Bulk registration** for big lessons — drop a whole YAML body into one cell:
+If you used `%cadence_autoregister`, the generated registered notebook
+already has a `%cadence_scaffold` cell at the bottom — running it
+produces the student version. You can also run scaffold directly on any
+notebook with the marker toolkit applied:
 
 ```python
-%%cadence_register_yaml
-- id: setup.mean-value
-  comparator: numeric
-  expected: {value: 49.5, tolerance: 0.001}
-  hint: average of 0..99
-- id: discovery.higgs-peak
-  comparator: exact
-  expected: 125
-  reveal_after: 3
-  solution_code: |
-    bin_edges = np.arange(100, 151)
-    counts, _ = np.histogram(m_gg, bins=bin_edges)
-    int(bin_edges[np.argmax(counts)])
-  allow_submissions: true
+%cadence_scaffold                    # auto-detects the current notebook
+%cadence_scaffold teacher.ipynb      # or pass it explicitly
 ```
 
-Or keep the YAML in version control alongside your notebook and load it:
+Or from the shell:
 
-```python
-%cadence_register_yaml_file checkpoints/week3.yaml
+```bash
+cadence-cli scaffold teacher.ipynb
 ```
+
+Auto-detection works in VSCode's Jupyter extension and in JupyterLab /
+classic Notebook served by `jupyter_server` ≥ 2. If it can't figure out
+the path, you'll see a clear error asking you to pass it.
+
+The output `<teacher>_student.ipynb` contains:
+
+1. A boxed welcome panel summarising the student-side API (`check`,
+   `submit_image`, `mark_done`, `show_hint`, `show_solution`).
+2. A `%load_ext cadence` + `%cadence_session <code> "your name"` header,
+   join code auto-filled from `~/.cadence/lessons.yaml`.
+3. All markdowns with `<!-- cadence:task -->` or a heading, copied
+   through (so section structure is preserved).
+4. One stub per exercise — placeholder body plus `check("id", ...)`.
+   Override the placeholder with a `# cadence:starter` block.
+5. Any code cell tagged `# cadence:solution`, copied verbatim.
+6. **Nothing inside any `cadence:hide` block** — those are teacher-only.
+
+Pass `--join-code <code>` to override the lookup, `--out path` for a
+custom path, or `--force` to overwrite an existing student notebook.
 
 ### Verifying before class
 
@@ -292,6 +489,18 @@ in order. The student scaffold has a placeholder `%cadence_session` line and
 one example `check(...)`. Both are tiny on purpose — they're a launching
 pad, not a tutorial. The longer-form particle-physics demos live at
 [cadence-dash.com/demo](https://cadence-dash.com/demo).
+
+**Generate the student notebook from a teacher notebook.** Same logic as
+`%cadence_scaffold` (see [above](#generating-the-student-notebook-from-yours))
+but runnable from the shell — handy in CI or when prepping multiple lessons
+at once:
+
+```bash
+cadence-cli scaffold teacher.ipynb                     # writes ./teacher_student.ipynb
+cadence-cli scaffold teacher.ipynb --out wk3.ipynb     # custom output path
+cadence-cli scaffold teacher.ipynb --join-code abc-def # override the cached lookup
+cadence-cli scaffold teacher.ipynb --force             # overwrite
+```
 
 **Manage locally-cached teacher credentials** — useful when the server-side
 lesson has been deleted but the local YAML is stale, or when you suspect a

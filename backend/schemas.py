@@ -245,6 +245,11 @@ class LessonCreate(BaseModel):
     # rejects on collision so the client can retry with its default generator.
     join_code: Optional[str] = None
     teacher_token: Optional[str] = None
+    # Override the 7-day default at creation time. After the lesson exists,
+    # retention can only be SHORTENED via PATCH /lessons/.../retention — never
+    # extended, so the value chosen here is the upper bound for this lesson's
+    # life. Must be 1–365 if provided.
+    session_retention_days: Optional[int] = None
 
 
 class LessonSummary(BaseModel):

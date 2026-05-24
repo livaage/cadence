@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -77,12 +77,29 @@ with engine.begin() as _conn:
     # Retention columns — see backend/migrations/002_add_retention.sql for prod.
     _conn.execute(_sql("ALTER TABLE lessons ADD COLUMN IF NOT EXISTS session_retention_days INTEGER NOT NULL DEFAULT 7"))
     _conn.execute(_sql("ALTER TABLE courses ADD COLUMN IF NOT EXISTS session_retention_days INTEGER NOT NULL DEFAULT 90"))
+    # De-identification marker — set by the cleanup job when a session is past
+    # its retention horizon and its display_name has been redacted.
+    _conn.execute(_sql("ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS deidentified_at TIMESTAMP NULL"))
+    _conn.execute(_sql("CREATE INDEX IF NOT EXISTS idx_lesson_sessions_deidentified_at ON lesson_sessions(deidentified_at)"))
     # Access log table for accountability — see backend/migrations/003_add_access_log.sql.
     _conn.execute(_sql("CREATE INDEX IF NOT EXISTS idx_access_log_occurred_at ON access_log(occurred_at)"))
     _conn.execute(_sql("CREATE INDEX IF NOT EXISTS idx_access_log_target ON access_log(target_kind, target_id)"))
     _conn.execute(_sql("CREATE INDEX IF NOT EXISTS idx_access_log_actor ON access_log(actor_kind, actor_id)"))
 
 app = FastAPI(title="Cadence", version="1.0.0")
+
+# Rate limiting — slowapi attaches a limiter to app.state and a 429 handler.
+# Storage is in-memory by default; that's per-instance, which is fine for the
+# things we're protecting (brute-force on /auth/login, runaway loops on /check)
+# because either attack would be aggressive enough to trip the per-instance
+# limit even across Cloud Run's scale-out.
+from slowapi import Limiter, _rate_limit_exceeded_handler  # noqa: E402
+from slowapi.util import get_remote_address  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS — defaults to local dev origins; comma-separated env var overrides for deploy.
 #   CADENCE_CORS_ORIGINS=https://cadence.school.edu,https://stage.cadence.school.edu
@@ -301,7 +318,22 @@ async def signup(payload: TeacherCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     if db.query(Teacher).filter(Teacher.username == payload.username).first():
         raise HTTPException(status_code=409, detail="Username already taken")
-    if db.query(Teacher).filter(Teacher.email == payload.email).first():
+    existing_email = db.query(Teacher).filter(Teacher.email == payload.email).first()
+    if existing_email:
+        # If the existing row was created via GitHub OAuth (no local password),
+        # the user is probably trying to sign up but they already have an OAuth
+        # account. Point them at the right door instead of a generic "already
+        # registered" — that error has confused folks who'd forgotten they
+        # signed in via GitHub on a different day.
+        if existing_email.github_id and not existing_email.password_hash:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "You already have an account for this email — created via "
+                    "GitHub sign-in. Use 'Sign in with GitHub' instead, then "
+                    "set a password from the account page if you want one."
+                ),
+            )
         raise HTTPException(status_code=409, detail="Email already registered")
 
     teacher = Teacher(
@@ -322,12 +354,16 @@ async def signup(payload: TeacherCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login", response_model=Token)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,
     username: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    """Teacher login with username/password."""
+    """Teacher login with username/password. Rate-limited per remote IP to
+    blunt credential-stuffing attacks; the limit is generous enough that a
+    human typo'ing their password a few times in a row won't trip it."""
     teacher = db.query(Teacher).filter(Teacher.username == username, Teacher.is_active == True).first()
     # password_hash is nullable for OAuth-only accounts; treat them as
     # "no local password set" rather than 500-ing on verify_password(None).
@@ -376,6 +412,84 @@ async def set_my_password(
             raise HTTPException(status_code=401, detail="Current password is incorrect")
 
     current_teacher.password_hash = get_password_hash(payload.new_password)
+    db.commit()
+    return None
+
+
+@app.post("/auth/me/delete-everything", status_code=204)
+async def delete_everything(
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """Hard-delete the teacher AND every lesson/course they own + all student
+    data attached to those lessons and courses. No grace period. Cannot be
+    undone — by the time this returns the row is gone and re-signing-in (via
+    GitHub OAuth or otherwise) will create a fresh account.
+
+    Sibling of `close_my_account` (soft-close + 30-day grace). The split lets
+    teachers pick: "let me change my mind" vs "wipe this now."
+    """
+    teacher_id = current_teacher.id
+    lessons = db.query(Lesson).filter(Lesson.teacher_id == teacher_id).all()
+    courses = db.query(Course).filter(Course.teacher_id == teacher_id).all()
+
+    n_sessions = 0
+    n_attempts = 0
+    n_submissions = 0
+    n_reveals = 0
+    n_checkpoints = 0
+
+    def _wipe_sessions(session_ids):
+        nonlocal n_attempts, n_submissions, n_reveals, n_sessions
+        if not session_ids:
+            return
+        n_attempts += db.query(AttemptEvent).filter(
+            AttemptEvent.session_id.in_(session_ids)
+        ).delete(synchronize_session=False)
+        n_submissions += db.query(CodeSubmission).filter(
+            CodeSubmission.session_id.in_(session_ids)
+        ).delete(synchronize_session=False)
+        n_reveals += db.query(SolutionReveal).filter(
+            SolutionReveal.session_id.in_(session_ids)
+        ).delete(synchronize_session=False)
+        n_sessions += db.query(LessonSession).filter(
+            LessonSession.id.in_(session_ids)
+        ).delete(synchronize_session=False)
+
+    for lesson in lessons:
+        lid = str(lesson.id)
+        ids = [s.id for s in db.query(LessonSession.id).filter(LessonSession.lesson_id == lid).all()]
+        _wipe_sessions(ids)
+        n_checkpoints += db.query(Checkpoint).filter(
+            Checkpoint.lesson_id == lid
+        ).delete(synchronize_session=False)
+        db.query(CourseNotebook).filter(
+            CourseNotebook.lesson_id == lesson.id
+        ).delete(synchronize_session=False)
+        db.delete(lesson)
+
+    for course in courses:
+        ids = [s.id for s in db.query(LessonSession.id).filter(LessonSession.course_id == str(course.id)).all()]
+        _wipe_sessions(ids)
+        db.query(CourseNotebook).filter(
+            CourseNotebook.course_id == course.id
+        ).delete(synchronize_session=False)
+        db.delete(course)
+
+    log_access(
+        db,
+        action="delete_teacher_everything",
+        actor_kind="teacher",
+        actor_id=str(teacher_id),
+        target_kind="teacher",
+        target_id=str(teacher_id),
+        details=(
+            f"hard-delete: lessons={len(lessons)} courses={len(courses)} "
+            f"sessions={n_sessions} attempts={n_attempts} submissions={n_submissions} "
+            f"reveals={n_reveals} checkpoints={n_checkpoints}"
+        ),
+    )
+    db.delete(current_teacher)
     db.commit()
     return None
 
@@ -498,11 +612,16 @@ async def github_callback(code: str, db: Session = Depends(get_db)):
 
     # Find-or-create: prefer github_id match (returning user), fall back to email
     # (auto-link to an existing password account), else create fresh.
+    # `status` flows through to the frontend so the AuthCallback page can show
+    # a banner that reflects what actually happened — silent sign-in is bad
+    # UX for "I tried to create a new account, got dropped into my old one".
+    status = "signed_in"
     teacher = db.query(Teacher).filter(Teacher.github_id == github_id).first()
     if not teacher:
         teacher = db.query(Teacher).filter(Teacher.email == email).first()
         if teacher:
             teacher.github_id = github_id
+            status = "linked"  # password account got GitHub linked on the fly
         else:
             base_username = (user.get("login") or email.split("@")[0]).lower()
             username = base_username
@@ -521,12 +640,26 @@ async def github_callback(code: str, db: Session = Depends(get_db)):
                 accepted_terms_at=datetime.utcnow(),
             )
             db.add(teacher)
+            status = "created"
+    # Re-activate a soft-closed teacher who signs in again. Without this the
+    # OAuth lookup re-finds them by github_id/email and we mint a JWT they
+    # can't actually use — every authenticated endpoint filters is_active=True
+    # and 401s. Re-sign-in is a "I want back in" signal; the 30-day delete
+    # window hasn't elapsed yet (cleanup job hard-deletes). We override `status`
+    # to `reactivated` so the frontend can warn — if it WASN'T intentional,
+    # the teacher should hard-delete from the account page immediately.
+    if not teacher.is_active:
+        teacher.is_active = True
+        teacher.closed_at = None
+        status = "reactivated"
     db.commit()
     db.refresh(teacher)
 
     our_jwt = create_access_token(data={"sub": teacher.username})
     # Fragment (#) keeps the JWT out of server logs and Referer headers.
-    return RedirectResponse(url=f"{FRONTEND_URL}/teacher/auth-callback#token={our_jwt}")
+    return RedirectResponse(
+        url=f"{FRONTEND_URL}/teacher/auth-callback#token={our_jwt}&status={status}"
+    )
 
 @app.get("/teacher/problems", response_model=List[ProblemSchema])
 async def get_problems_teacher(
@@ -909,6 +1042,9 @@ async def create_lesson(
     """
     join_code = payload.join_code or _generate_join_code(db)
     teacher_token = payload.teacher_token or secrets.token_urlsafe(24)
+    retention = payload.session_retention_days
+    if retention is not None and not (1 <= retention <= 365):
+        raise HTTPException(400, "session_retention_days must be between 1 and 365")
 
     if db.query(Lesson).filter(Lesson.join_code == join_code).first():
         raise HTTPException(status_code=409, detail="join_code already in use")
@@ -920,6 +1056,8 @@ async def create_lesson(
         join_code=join_code,
         teacher_token=teacher_token,
         teacher_id=teacher.id if teacher else None,
+        # Honor a creation-time override; otherwise the column default (7) wins.
+        **({"session_retention_days": retention} if retention is not None else {}),
     )
     db.add(lesson)
     db.commit()
@@ -1321,6 +1459,24 @@ async def add_notebook_to_course(
             lesson_id=lesson.id,
             order_index=payload.order_index,
         ))
+    # Joining a lesson to a course is a clear "I want this notebook tracked
+    # for as long as the course is" signal. If the course's retention is
+    # longer than the lesson's, bump the lesson up to match — the one place
+    # where extending a lesson's retention is allowed (vs the general
+    # shorten-only rule), because the policy change is teacher-initiated
+    # by attaching, not a unilateral extension after the fact.
+    if course.session_retention_days > lesson.session_retention_days:
+        previous = lesson.session_retention_days
+        lesson.session_retention_days = course.session_retention_days
+        log_access(
+            db,
+            action="extend_lesson_retention_via_course_attach",
+            actor_kind="teacher",
+            actor_id=f"token:{teacher_token[:8]}...",
+            target_kind="lesson",
+            target_id=str(lesson.id),
+            details=f"{previous}d -> {lesson.session_retention_days}d via course {course.id}",
+        )
     db.commit()
     return {"course_id": str(course.id), "lesson_id": str(lesson.id)}
 
@@ -1546,7 +1702,12 @@ async def get_course_live(teacher_token: str, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 @app.post("/check", response_model=CheckResponse)
-async def check_answer(payload: CheckRequest, db: Session = Depends(get_db)):
+@limiter.limit("120/minute")
+async def check_answer(request: Request, payload: CheckRequest, db: Session = Depends(get_db)):
+    # Per-IP rate limit (~2 attempts/second). Catches runaway student loops and
+    # any single machine hammering the endpoint without throttling legitimate
+    # rapid iteration. A whole classroom won't trip it because each student is
+    # on their own IP.
     """Student submits an answer for a named checkpoint.
 
     Accepts either a standalone-lesson session (scoped to session.lesson_id)
@@ -2681,13 +2842,23 @@ _DEFAULT_RETENTION_DAYS = 90
 _ACCESS_LOG_RETENTION_DAYS = 365  # design doc + ROPA: 12 months
 
 
+DEIDENTIFIED_DISPLAY_NAME = "(de-identified)"
+
+
 def cleanup_expired_sessions_once() -> dict:
-    """Wipe sessions past their teacher-set retention AND access log entries
-    past their 12-month retention. Returns counts of each.
+    """De-identify sessions past their teacher-set retention AND prune access
+    log entries past their 12-month retention. Returns counts of each.
 
     Session retention is read from the parent Lesson or Course; last_seen_at
     is the reference point with a fallback to started_at for sessions that
     joined but never submitted.
+
+    De-identification (vs. delete) blanks the student's display_name and
+    stamps `deidentified_at`. Aggregate rows (AttemptEvent / CodeSubmission /
+    SolutionReveal) are retained so dashboards still show solve rates,
+    common wrong answers, and timing distributions — they're no longer
+    personal data once the link back to a named student is broken. Already-
+    de-identified rows are skipped on subsequent sweeps.
     """
     db = SessionLocal()
     try:
@@ -2703,7 +2874,7 @@ def cleanup_expired_sessions_once() -> dict:
 
         now = datetime.utcnow()
         expired_ids = []
-        for session in db.query(LessonSession).all():
+        for session in db.query(LessonSession).filter(LessonSession.deidentified_at.is_(None)).all():
             if session.course_id:
                 days = course_retention.get(session.course_id, _DEFAULT_RETENTION_DAYS)
             elif session.lesson_id:
@@ -2716,10 +2887,13 @@ def cleanup_expired_sessions_once() -> dict:
 
         sessions_wiped = 0
         if expired_ids:
-            db.query(AttemptEvent).filter(AttemptEvent.session_id.in_(expired_ids)).delete(synchronize_session=False)
-            db.query(CodeSubmission).filter(CodeSubmission.session_id.in_(expired_ids)).delete(synchronize_session=False)
-            db.query(SolutionReveal).filter(SolutionReveal.session_id.in_(expired_ids)).delete(synchronize_session=False)
-            db.query(LessonSession).filter(LessonSession.id.in_(expired_ids)).delete(synchronize_session=False)
+            db.query(LessonSession).filter(LessonSession.id.in_(expired_ids)).update(
+                {
+                    LessonSession.display_name: DEIDENTIFIED_DISPLAY_NAME,
+                    LessonSession.deidentified_at: now,
+                },
+                synchronize_session=False,
+            )
             sessions_wiped = len(expired_ids)
 
         # Purge access log entries past the 12-month retention.
@@ -2738,7 +2912,7 @@ def cleanup_expired_sessions_once() -> dict:
 
         db.commit()
         return {
-            "sessions": sessions_wiped,
+            "sessions_deidentified": sessions_wiped,
             "access_log_entries": logs_wiped,
             "closed_teachers": teachers_wiped,
         }
@@ -2757,17 +2931,76 @@ async def _startup_cleanup_sweep():
         logging.getLogger("cadence").exception("startup cleanup failed")
 
 
+# Optional: lock cleanup to a specific Cloud Scheduler service account so a
+# leaked CLEANUP_SECRET on its own can't trigger it. Set this env var to the
+# service account email (e.g. cleanup-scheduler@<project>.iam.gserviceaccount.com)
+# that signs the OIDC token; we'll verify the token AND reject any other
+# signer. If unset, OIDC verification is skipped and we fall back to the
+# shared-secret check below (backward-compatible with existing deploys).
+CLEANUP_OIDC_SA_EMAIL = os.getenv("CLEANUP_OIDC_SA_EMAIL")
+# The audience the OIDC token must be issued for — typically the public URL
+# of THIS service (Cloud Run sets `https://<service>-<hash>.run.app` or your
+# custom domain). Configured in the Cloud Scheduler job's OIDC settings.
+CLEANUP_OIDC_AUDIENCE = os.getenv("CLEANUP_OIDC_AUDIENCE")
+
+
+def _verify_oidc_token(token: str) -> dict:
+    """Verify a Google-issued OIDC ID token. Returns the decoded claims dict.
+    Raises HTTPException(401) if anything's wrong."""
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+    except ImportError:
+        raise HTTPException(503, "OIDC verification unavailable (google-auth not installed)")
+    try:
+        claims = google_id_token.verify_oauth2_token(
+            token,
+            google_requests.Request(),
+            audience=CLEANUP_OIDC_AUDIENCE,
+        )
+    except ValueError as e:
+        raise HTTPException(401, f"OIDC token invalid: {e}")
+    # Lock to a specific signer.
+    if CLEANUP_OIDC_SA_EMAIL and claims.get("email") != CLEANUP_OIDC_SA_EMAIL:
+        raise HTTPException(401, "OIDC token signer not authorized")
+    if not claims.get("email_verified", False):
+        raise HTTPException(401, "OIDC token email not verified")
+    return claims
+
+
 @app.post("/admin/cleanup")
 async def admin_cleanup(authorization: Optional[str] = Header(None)):
-    """Trigger a retention sweep. Cloud Scheduler should hit this daily with:
-        Authorization: Bearer <CLEANUP_SECRET>
+    """Trigger a retention sweep. Wipes sessions past their teacher-set
+    retention AND access log entries past their 12-month retention.
 
-    Wipes sessions past their teacher-set retention AND access log entries
-    past their 12-month retention.
+    Two acceptable auth modes:
+
+      1. **OIDC token (preferred)** — configure Cloud Scheduler with an
+         OIDC auth header targeting THIS service's URL, then set
+         `CLEANUP_OIDC_SA_EMAIL` and `CLEANUP_OIDC_AUDIENCE` env vars.
+         The token is verified against Google's keys and the signer email
+         is matched, so a leaked URL alone isn't enough to invoke this.
+
+      2. **Shared bearer (legacy)** — `Authorization: Bearer <CLEANUP_SECRET>`.
+         Still supported for back-compat. Plan: remove once all schedulers
+         are migrated to OIDC.
+
+    OIDC mode is tried first if `CLEANUP_OIDC_SA_EMAIL` is set and the
+    Authorization header looks like a JWT (three dot-separated parts).
     """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing Authorization header")
+    token = authorization[len("Bearer "):].strip()
+
+    # OIDC path: if a JWT-shaped token AND an SA email is configured, verify.
+    if CLEANUP_OIDC_SA_EMAIL and token.count(".") == 2:
+        _verify_oidc_token(token)
+        return await asyncio.to_thread(cleanup_expired_sessions_once)
+
+    # Legacy shared-secret path.
     if not CLEANUP_SECRET:
         raise HTTPException(503, "Cleanup is not configured (CLEANUP_SECRET unset)")
-    if authorization != f"Bearer {CLEANUP_SECRET}":
+    if token != CLEANUP_SECRET:
         raise HTTPException(401, "Invalid cleanup credentials")
     return await asyncio.to_thread(cleanup_expired_sessions_once)
 

@@ -242,6 +242,12 @@ class LessonSession(Base):
     display_name = Column(String(255), nullable=False)
     started_at = Column(DateTime, default=datetime.utcnow)
     last_seen_at = Column(DateTime, default=datetime.utcnow)
+    # Set when the cleanup job has de-identified this session past its
+    # retention horizon. After that, display_name is the redaction sentinel
+    # and the cleanup skip-checks this column so it isn't re-processed.
+    # Aggregate rows (AttemptEvent, CodeSubmission, SolutionReveal) are kept
+    # so dashboards still show solve rates, common wrong answers, etc.
+    deidentified_at = Column(DateTime, nullable=True, index=True)
 
 
 class AttemptEvent(Base):

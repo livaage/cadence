@@ -153,12 +153,17 @@ def set_course_teacher(
     course_name: str,
     join_code: str,
     api: CadenceAPI,
+    session_retention_days: Optional[int] = None,
 ) -> None:
     _course_teacher_state["teacher_token"] = teacher_token
     _course_teacher_state["course_id"] = course_id
     _course_teacher_state["course_name"] = course_name
     _course_teacher_state["join_code"] = join_code
     _course_teacher_state["api"] = api
+    # Lets `%cadence_add_notebook` create lessons that inherit the course's
+    # retention immediately, so the course card and the lesson card don't
+    # show conflicting day counts.
+    _course_teacher_state["session_retention_days"] = session_retention_days
 
 
 def current_course_teacher() -> Optional[dict]:
@@ -267,6 +272,57 @@ def mark_done(checkpoint_id: str) -> CheckResult:
     return check(checkpoint_id, "(marked done)")
 
 
+def _render_hint_markdown(text: str) -> str:
+    """Tiny markdown-to-HTML renderer for hint text, so teachers can use
+    backticks for inline code, fenced blocks for snippets, and **bold**.
+
+    Not a real markdown parser — just the three constructs that come up in
+    hints often enough to matter. Anything that isn't a fence/backtick/bold is
+    left alone so existing plain-text hints render unchanged. HTML in the
+    source is preserved (it was already rendered raw before this function
+    existed; we don't want to silently regress that)."""
+    import re as _re
+    import html as _html
+
+    out_parts: list = []
+    pos = 0
+    # Fenced code blocks first (```...```), then inline backticks, then bold.
+    # We segment by fences and process each segment.
+    fence_re = _re.compile(r"```(?:[a-zA-Z0-9_+-]*)?\n?([\s\S]*?)```", _re.MULTILINE)
+    for m in fence_re.finditer(text):
+        before = text[pos:m.start()]
+        out_parts.append(_render_hint_inline(before))
+        code = _html.escape(m.group(1).rstrip("\n"))
+        out_parts.append(
+            f'<pre style="background: #fff; border: 1px solid #e5d7a5;'
+            f' border-radius: 3px; padding: 6px 8px; margin: 4px 0;'
+            f' font-size: 0.9em; overflow-x: auto;"><code>{code}</code></pre>'
+        )
+        pos = m.end()
+    out_parts.append(_render_hint_inline(text[pos:]))
+    return "".join(out_parts)
+
+
+def _render_hint_inline(text: str) -> str:
+    """Inline backticks and **bold** only; leaves any existing HTML alone."""
+    import re as _re
+    # Backticks: `code` → <code>code</code>. We escape ONLY the backtick body.
+    import html as _html
+    parts: list = []
+    last = 0
+    for m in _re.finditer(r"`([^`\n]+)`", text):
+        parts.append(text[last:m.start()])
+        parts.append(f"<code>{_html.escape(m.group(1))}</code>")
+        last = m.end()
+    parts.append(text[last:])
+    joined = "".join(parts)
+    # Bold: **bold**. Has to come after backticks so we don't ** inside `code`.
+    joined = _re.sub(
+        r"\*\*([^*\n]+)\*\*", lambda m: f"<strong>{m.group(1)}</strong>", joined
+    )
+    return joined
+
+
 def show_hint(checkpoint_id: str):
     """Fetch and render the teacher's hint for `checkpoint_id`.
 
@@ -296,7 +352,7 @@ def show_hint(checkpoint_id: str):
         f'<div style="border-left: 3px solid #b45309; padding: 8px 12px; '
         f'background: #fffbeb; margin: 4px 0;">'
         f'<strong>💡 Hint for <code>{checkpoint_id}</code></strong>'
-        f'<div style="margin-top: 4px;">{resp["hint"]}</div>'
+        f'<div style="margin-top: 4px;">{_render_hint_markdown(resp["hint"])}</div>'
         f'</div>'
     )
     if HTML is not None:

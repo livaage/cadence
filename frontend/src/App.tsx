@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
-import { Alert, Box, AppBar, Toolbar, Container, Stack, Button, Typography, Link as MuiLink } from '@mui/material';
+import { Alert, Box, AppBar, Toolbar, Container, Stack, Button, IconButton, Tooltip, Typography, Link as MuiLink } from '@mui/material';
+import CloseIcon from '@mui/icons-material/Close';
 
 import Welcome from './components/Welcome';
 import LiveProgress from './components/LiveProgress';
@@ -60,7 +61,9 @@ function Navigation() {
           {navLink('/teacher/library', 'Library')}
           {teacher ? (
             <>
-              {navLink('/teacher/account', teacher.username)}
+              <Tooltip title={`Signed in as ${teacher.username}`} arrow>
+                <span>{navLink('/teacher/account', 'Profile')}</span>
+              </Tooltip>
               <Button
                 size="small"
                 onClick={() => { signOut(); navigate('/'); }}
@@ -75,6 +78,65 @@ function Navigation() {
         </Stack>
       </Toolbar>
     </AppBar>
+  );
+}
+
+// One-shot banner after an OAuth round-trip. AuthCallback stashes the status
+// in sessionStorage so this component can render the right message on the
+// page the user actually lands on (account or library) — and then clear it.
+function AuthStatusBanner() {
+  const { teacher } = useAuth();
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Read once. Defer the clear until the user has seen it (next mount).
+    const s = sessionStorage.getItem('auth_status');
+    if (s) {
+      setStatus(s);
+      sessionStorage.removeItem('auth_status');
+    }
+  }, []);
+
+  if (!status || !teacher) return null;
+
+  let severity: 'success' | 'info' | 'warning' = 'success';
+  let message: React.ReactNode = null;
+  switch (status) {
+    case 'created':
+      message = <>Welcome to Cadence! Account <strong>{teacher.username}</strong> created via GitHub.</>;
+      break;
+    case 'linked':
+      message = <>Linked your GitHub identity to the existing account <strong>{teacher.username}</strong>. You can sign in either way now.</>;
+      severity = 'info';
+      break;
+    case 'reactivated':
+      message = (
+        <>
+          Your account <strong>{teacher.username}</strong> was previously closed — signing in just reactivated it.
+          If this wasn't you, <RouterLink to="/teacher/account" style={{ textDecoration: 'underline' }}>close or permanently delete it</RouterLink> now.
+        </>
+      );
+      severity = 'warning';
+      break;
+    case 'signed_in':
+    default:
+      message = <>Signed in as <strong>{teacher.username}</strong> — your existing account.</>;
+      severity = 'info';
+      break;
+  }
+
+  return (
+    <Alert
+      severity={severity}
+      sx={{ borderRadius: 0, justifyContent: 'center' }}
+      action={
+        <IconButton size="small" onClick={() => setStatus(null)} aria-label="dismiss">
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      }
+    >
+      {message}
+    </Alert>
   );
 }
 
@@ -156,6 +218,7 @@ function App() {
     <AuthProvider>
       <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
         <Navigation />
+        <AuthStatusBanner />
         <SetPasswordBanner />
         <Container maxWidth="lg" sx={{ mt: 4, mb: 4, flexGrow: 1 }}>
           <Routes>
