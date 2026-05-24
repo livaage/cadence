@@ -37,10 +37,7 @@ class CheckResult:
             return ""
         return (
             f'<div style="margin-top: 4px; color: #b45309;">💡 Need a hint? '
-            f'Run <code>cadence.show_hint("{self.checkpoint_id}")</code> '
-            f'<small style="color: #666;">'
-            f'(add <code>import cadence</code> at the top of the notebook if you haven\'t already)'
-            f'</small></div>'
+            f'Run <code>show_hint("{self.checkpoint_id}")</code></div>'
         )
 
     def _reveal_html(self) -> str:
@@ -48,10 +45,7 @@ class CheckResult:
             return ""
         return (
             f'<div style="margin-top: 4px; color: #6b21a8;">💡 Show solution? '
-            f'Run <code>cadence.show_solution("{self.checkpoint_id}")</code> '
-            f'<small style="color: #666;">'
-            f'(add <code>import cadence</code> at the top of the notebook if you haven\'t already)'
-            f'</small></div>'
+            f'Run <code>show_solution("{self.checkpoint_id}")</code></div>'
         )
 
     def _repr_html_(self) -> str:
@@ -206,7 +200,7 @@ def submit_image(checkpoint_id: str, figure_or_bytes: Any, code: Optional[str] =
 
     Example:
         fig, ax = plt.subplots(); ax.plot(x, y); ax.set_title("My finding")
-        cadence.submit_image("discovery.plot", fig)
+        submit_image("discovery.plot", fig)
     """
     import io, base64 as _b64
     api = _state["api"]

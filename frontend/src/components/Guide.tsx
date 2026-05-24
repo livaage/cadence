@@ -289,7 +289,7 @@ const Guide: React.FC = () => {
                   <Inline>
                     After <code>N</code> wrong attempts (default <code>1</code>), the student's
                     failure cell shows a <em>"💡 Need a hint?"</em> prompt. They opt in by running{' '}
-                    <code>cadence.show_hint("id")</code>.
+                    <code>show_hint("id")</code>.
                   </Inline>
                 </FeatureCard>
               </Grid>
@@ -297,7 +297,7 @@ const Guide: React.FC = () => {
                 <FeatureCard title="Solutions (opt-in)" subtitle="--reveal-after N --solution-value … --solution-code …">
                   <Inline>
                     After <code>N</code> attempts the student can run{' '}
-                    <code>cadence.show_solution("id")</code> to see the canonical value, a fully
+                    <code>show_solution("id")</code> to see the canonical value, a fully
                     worked code snippet, or both. Every reveal is logged on the dashboard.
                   </Inline>
                 </FeatureCard>
@@ -314,7 +314,7 @@ const Guide: React.FC = () => {
                 <FeatureCard title="Plot submissions" subtitle="--allow-submissions (same flag)">
                   <Inline>
                     Same flag. When a checkpoint accepts submissions, students can send a
-                    matplotlib figure with <code>cadence.submit_image("id", fig)</code>.
+                    matplotlib figure with <code>submit_image("id", fig)</code>.
                   </Inline>
                 </FeatureCard>
               </Grid>
@@ -596,9 +596,7 @@ const Guide: React.FC = () => {
               Cells include normal Python code plus a <code>check("checkpoint-id", value)</code>{' '}
               call at the end. The cell output shows ✅ or ❌ inline:
             </Inline>
-            <CodeBlock>{`from cadence import check
-
-# Your code:
+            <CodeBlock>{`# Your code:
 mean_value = arr.mean()
 
 # This call sends your answer to the teacher's dashboard:
@@ -614,12 +612,11 @@ check("setup.mean-value", mean_value)
             <Inline>
               After a few wrong attempts you may see <em>"💡 Need a hint?"</em> prompts. Opt in:
             </Inline>
-            <CodeBlock>{`import cadence
-cadence.show_hint("discovery.higgs-peak")`}</CodeBlock>
+            <CodeBlock>{`show_hint("discovery.higgs-peak")`}</CodeBlock>
             <Inline>
               Some checkpoints let you reveal a worked solution after more attempts:
             </Inline>
-            <CodeBlock>{`cadence.show_solution("discovery.higgs-peak")
+            <CodeBlock>{`show_solution("discovery.higgs-peak")
 # Renders the expected value + a fully worked code snippet.
 # Every reveal is logged on the teacher's dashboard.`}</CodeBlock>
           </Step>
@@ -636,8 +633,7 @@ peak = int(bin_edges[np.argmax(counts)])
 check("discovery.higgs-peak", peak)
 # 📤 Code submitted to discovery.higgs-peak`}</CodeBlock>
             <Inline>For plot-driven checkpoints, send a matplotlib figure:</Inline>
-            <CodeBlock>{`from cadence import submit_image
-fig, ax = plt.subplots()
+            <CodeBlock>{`fig, ax = plt.subplots()
 ax.hist(m_gg, bins=50)
 submit_image("discovery.peak-plot", fig)
 # 📤 Image submitted (PNG, 24 KB)`}</CodeBlock>
@@ -649,8 +645,7 @@ submit_image("discovery.peak-plot", fig)
               <strong>manual</strong> checkpoint. No value to send — once you've done the work,
               mark yourself done:
             </Inline>
-            <CodeBlock>{`from cadence import mark_done
-mark_done("discovery.reflect")
+            <CodeBlock>{`mark_done("discovery.reflect")
 # ✅ Marked done`}</CodeBlock>
           </Step>
 
@@ -814,10 +809,10 @@ fib(10)`}</CodeBlock>
                   <CommandRow cmd={`check("id", value)`} what="Submit an answer for a checkpoint. Returns CheckResult." who="student" />
                   <CommandRow cmd={`%%cadence_time id`} what="Run the cell, time it, then submit the last expression's value as the answer." who="student" />
                   <CommandRow cmd={`%%cadence_submit id`} what="Run the cell normally AND ship the source to the teacher's dashboard. Requires --allow-submissions on the checkpoint." who="student" />
-                  <CommandRow cmd={`cadence.show_hint("id")`} what="Render the teacher's hint (unlocks after N wrong attempts)." who="student" />
-                  <CommandRow cmd={`cadence.show_solution("id")`} what="Render the worked solution (unlocks after N attempts)." who="student" />
-                  <CommandRow cmd={`cadence.mark_done("id")`} what="Self-attest completion for manual (reflection-style) checkpoints." who="student" />
-                  <CommandRow cmd={`cadence.submit_image("id", fig)`} what="Send a matplotlib figure / PNG bytes to a submission-enabled checkpoint." who="student" />
+                  <CommandRow cmd={`show_hint("id")`} what="Render the teacher's hint (unlocks after N wrong attempts)." who="student" />
+                  <CommandRow cmd={`show_solution("id")`} what="Render the worked solution (unlocks after N attempts)." who="student" />
+                  <CommandRow cmd={`mark_done("id")`} what="Self-attest completion for manual (reflection-style) checkpoints." who="student" />
+                  <CommandRow cmd={`submit_image("id", fig)`} what="Send a matplotlib figure / PNG bytes to a submission-enabled checkpoint." who="student" />
                 </TableBody>
               </Table>
 

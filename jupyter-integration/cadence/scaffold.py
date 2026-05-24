@@ -340,10 +340,16 @@ def _build_student_notebook(
     # the session cell so students see how submission works before they join.
     student.cells.append(nbf.v4.new_markdown_cell(source=_STUDENT_INTRO))
 
-    # Session header — load_ext + auto-filled join code.
+    # Session header — load_ext + auto-filled join code + explicit imports
+    # of the student-side helpers. The extension also pushes these into the
+    # user namespace at load time (belt-and-braces), but the explicit import
+    # is what students see in the cell, makes the source of `check` obvious,
+    # and survives in environments where the extension push doesn't fire (or
+    # where a stale version of the package is installed and silently shadowed).
     header = (
         f"%load_ext cadence\n"
-        f'%cadence_session {join_code} "{name_placeholder}"'
+        f'%cadence_session {join_code} "{name_placeholder}"\n'
+        "from cadence import check, show_hint, show_solution, mark_done, submit_image"
     )
     student.cells.append(nbf.v4.new_code_cell(source=header))
 

@@ -124,8 +124,6 @@ def student_starter(lesson_name: str = "My Lesson") -> "nbf.NotebookNode":
         new_code_cell(
             "%load_ext cadence\n"
             '%cadence_session <JOIN_CODE> "Your name here"\n'
-            "\n"
-            "from cadence import check, mark_done\n"
         ),
         new_markdown_cell(
             "## Exercise 1 — example\n\n"
@@ -142,8 +140,8 @@ def student_starter(lesson_name: str = "My Lesson") -> "nbf.NotebookNode":
         ),
         new_markdown_cell(
             "## Useful student commands\n\n"
-            "- `cadence.show_hint(\"<id>\")` — peek the teacher's hint (once enough wrong attempts).\n"
-            "- `cadence.show_solution(\"<id>\")` — see the worked solution (if the teacher enabled it).\n"
+            "- `show_hint(\"<id>\")` — peek the teacher's hint (once enough wrong attempts).\n"
+            "- `show_solution(\"<id>\")` — see the worked solution (if the teacher enabled it).\n"
             "- `mark_done(\"<id>\")` — self-attest a manual / reflection checkpoint.\n"
             "- `%cadence_my_data` — see exactly what's stored about you.\n"
             "- `%cadence_help` — full cheatsheet of every Cadence magic."

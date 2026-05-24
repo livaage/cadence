@@ -693,7 +693,7 @@ function CheckpointCard({ cp, peers, roster, teacherToken, showRoster }: { cp: C
               {label}
             </Typography>
             {cp.comparator === 'manual' && (
-              <Tooltip title="Manual checkpoint — student calls cadence.mark_done() to self-attest. No automated check.">
+              <Tooltip title="Manual checkpoint — student calls mark_done() to self-attest. No automated check.">
                 <Box sx={{ fontSize: '0.95rem', cursor: 'help', opacity: 0.85 }}>✋</Box>
               </Tooltip>
             )}
@@ -705,7 +705,7 @@ function CheckpointCard({ cp, peers, roster, teacherToken, showRoster }: { cp: C
                       Hint unlocks for students after{' '}
                       <strong>{cp.hint_after_attempts}</strong>{' '}
                       attempt{cp.hint_after_attempts === 1 ? '' : 's'}. They opt in via{' '}
-                      <code>cadence.show_hint()</code>.
+                      <code>show_hint()</code>.
                     </div>
                   </Box>
                 }

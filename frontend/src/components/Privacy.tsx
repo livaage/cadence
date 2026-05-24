@@ -82,7 +82,7 @@ const Privacy: React.FC = () => {
               <strong>Code or plot submissions (opt-in per checkpoint).</strong> Only when the
               teacher registered the checkpoint with <code>--allow-submissions</code> AND the
               student explicitly ran <code>%%cadence_submit</code> or{' '}
-              <code>cadence.submit_image()</code>. Otherwise we never see student code.
+              <code>submit_image()</code>. Otherwise we never see student code.
             </Typography>
           </Stack>
         </CardContent>

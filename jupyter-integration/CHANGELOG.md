@@ -6,6 +6,36 @@ release is actually cut + uploaded to PyPI.
 
 ## Unreleased
 
+## 0.2.2 — 2026-05-24
+
+### Fixed
+- **Student notebooks now have explicit imports.** 0.2.1 relied on
+  `%load_ext cadence` pushing `check` / `show_hint` / `show_solution` /
+  `mark_done` / `submit_image` into the user namespace. That works when
+  the freshly-installed cadence module is the one IPython resolves, but
+  silently breaks if a stale install is shadowing it (we hit exactly
+  this dev-environment quirk locally). The scaffold-generated student
+  header now adds an explicit
+  `from cadence import check, show_hint, show_solution, mark_done, submit_image`
+  line — pythonic, obvious to students reading the cell, and immune to
+  loader resolution surprises. The namespace push from 0.2.1 is kept as
+  a belt-and-braces fallback so teacher notebooks without the explicit
+  import still work.
+
+### Changed
+- All user-facing docs and HTML prompts (web Guide, Demo page, Privacy
+  page, dashboard tooltips, `%cadence_help` cheatsheet, `CheckResult`
+  hint/solution prompts, `submit_image` docstring, student starter
+  notebook) now use bare names like `show_hint("id")` instead of the
+  mix of `cadence.show_hint("id")` and `from cadence import show_hint`
+  that had crept in. Single consistent pattern across the surface.
+- `demo-teacher-setup.ipynb` (shipped under `/demo`) trimmed from
+  ~1100 words to ~450 words. Dropped the 257-word "rules in 60 seconds"
+  reference table (lives in the README) and the "Alternative
+  registration paths" section. Multi-paragraph code-cell explainers
+  collapsed to single-line comments so the actual `cadence:` markers
+  are visible against less prose.
+
 ## 0.2.1 — 2026-05-24
 
 ### Fixed
