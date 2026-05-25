@@ -50,12 +50,32 @@ from code_executor import CodeExecutor
 from auth import create_access_token, get_current_teacher, optional_teacher, verify_password, get_password_hash
 from github_integration import GitHubIntegration
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Create database tables + apply additive migrations.
+#
+# Wrapped in a try/except so a transient DB error during startup (Postgres
+# connection-pool saturation from a blue/green deploy, a Cloud SQL restart
+# in progress, etc.) doesn't kill the container before it can serve traffic.
+# Without this guard a single bad rollout becomes self-healing-impossible:
+# the new revision can't start, the old revision keeps holding pool slots,
+# and there's no way to break the deadlock without deleting the service.
+# All statements are idempotent (`CREATE TABLE IF NOT EXISTS` / `ADD COLUMN
+# IF NOT EXISTS`), so they'll just retry on subsequent boots once the DB is
+# reachable; the cleanup cron also exercises the schema if it ever lags.
+import logging as _startup_log
+try:
+    Base.metadata.create_all(bind=engine)
+    _startup_migrations_ok = True
+except Exception as _e:
+    _startup_log.warning(
+        "Startup create_all skipped — DB unreachable at boot: %s. Schema will "
+        "be retried on first request handler that touches it.", _e
+    )
+    _startup_migrations_ok = False
 
 # Lightweight additive migrations so existing deployments pick up new columns
 # without needing a full `docker compose down -v`. Safe to run on every boot.
-with engine.begin() as _conn:
+try:
+  with engine.begin() as _conn:
     from sqlalchemy import text as _sql
     _conn.execute(_sql("ALTER TABLE attempt_events ADD COLUMN IF NOT EXISTS elapsed_ms INTEGER"))
     _conn.execute(_sql("ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS course_id VARCHAR(255)"))
@@ -85,6 +105,11 @@ with engine.begin() as _conn:
     _conn.execute(_sql("CREATE INDEX IF NOT EXISTS idx_access_log_occurred_at ON access_log(occurred_at)"))
     _conn.execute(_sql("CREATE INDEX IF NOT EXISTS idx_access_log_target ON access_log(target_kind, target_id)"))
     _conn.execute(_sql("CREATE INDEX IF NOT EXISTS idx_access_log_actor ON access_log(actor_kind, actor_id)"))
+except Exception as _e:
+  _startup_log.warning(
+    "Startup additive migrations skipped — DB unreachable at boot: %s. They "
+    "are idempotent and will retry on the next boot once the DB is healthy.", _e
+  )
 
 app = FastAPI(title="Cadence", version="1.0.0")
 

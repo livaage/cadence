@@ -10,11 +10,100 @@ import {
   Stack,
   InputAdornment,
   Chip,
+  Grid,
 } from '@mui/material';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import VpnKeyIcon from '@mui/icons-material/VpnKey';
 import CodeIcon from '@mui/icons-material/Code';
 import Logo from './Logo';
+
+// Two-panel value-prop block matching the deck. Left column is the
+// in-class "communication" pitch (warm terracotta accent — same hex the
+// dashboard uses for timing); right column is the longitudinal "improving
+// teaching" pitch (teal accent — same hex as the attempts histogram bar).
+// Keeping the colour vocabulary consistent across deck + dashboard helps
+// teachers anchor on the same mental model when they switch contexts.
+const VALUE_PROPS = [
+  {
+    eyebrow: 'In the moment',
+    accent: '#D17753',
+    title: 'Improved communication',
+    bullets: [
+      'Pace your lessons perfectly',
+      "See who's stuck in real time",
+      'Showcase solutions without pushing files',
+      'Monitor student understanding and quick-patch gaps',
+      "Optional auto-hints when they're stuck",
+      'Built-in solutions after N attempts, no second notebook',
+    ],
+  },
+  {
+    eyebrow: 'Over time',
+    accent: '#2BA89E',
+    title: 'Improving teaching',
+    bullets: [
+      'Measure your lesson effectiveness',
+      'Measure how hard your sessions really are',
+      'Surface the common wrong answers',
+      'Compare solutions across students',
+      'Spot AI use, copy-paste, convergent approaches',
+    ],
+  },
+];
+
+const ValueCard: React.FC<typeof VALUE_PROPS[number]> = ({ eyebrow, accent, title, bullets }) => (
+  <Card
+    sx={{
+      height: '100%',
+      bgcolor: '#f5f4ef',
+      borderLeft: `4px solid ${accent}`,
+      boxShadow: 'none',
+      border: '1px solid',
+      borderColor: 'divider',
+      borderLeftWidth: 4,
+      borderLeftColor: accent,
+    }}
+  >
+    <CardContent sx={{ p: { xs: 2.5, sm: 3 } }}>
+      <Typography
+        sx={{
+          color: accent,
+          fontSize: '0.7rem',
+          fontWeight: 700,
+          letterSpacing: '0.18em',
+          textTransform: 'uppercase',
+          mb: 1.5,
+        }}
+      >
+        {eyebrow}
+      </Typography>
+      <Typography
+        variant="h5"
+        component="h3"
+        sx={{
+          fontWeight: 600,
+          letterSpacing: '-0.01em',
+          mb: 2,
+          fontSize: { xs: '1.35rem', sm: '1.5rem' },
+        }}
+      >
+        {title}
+      </Typography>
+      <Box component="ul" sx={{ pl: 2.5, m: 0 }}>
+        {bullets.map((b) => (
+          <Typography
+            key={b}
+            component="li"
+            variant="body2"
+            sx={{ mb: 0.75, lineHeight: 1.55, color: 'text.primary' }}
+          >
+            {b}
+          </Typography>
+        ))}
+      </Box>
+    </CardContent>
+  </Card>
+);
 
 function extractToken(input: string): string {
   const trimmed = input.trim();
@@ -40,7 +129,7 @@ const Welcome: React.FC = () => {
   };
 
   return (
-    <Stack spacing={3.5} sx={{ maxWidth: 720, mx: 'auto', pt: 6 }}>
+    <Stack spacing={3.5} sx={{ maxWidth: 900, mx: 'auto', pt: 6 }}>
       <Box sx={{ textAlign: 'center', mb: 2 }}>
         <Box sx={{ mb: 3, display: 'flex', justifyContent: 'center' }}>
           <Logo height={80} wordmarkColor="#1c1917" />
@@ -64,6 +153,14 @@ const Welcome: React.FC = () => {
           {' '}— per-checkpoint solve rates, common wrong answers, who needs help.
         </Typography>
       </Box>
+
+      <Grid container spacing={2.5}>
+        {VALUE_PROPS.map((vp) => (
+          <Grid item xs={12} md={6} key={vp.eyebrow}>
+            <ValueCard {...vp} />
+          </Grid>
+        ))}
+      </Grid>
 
       <Card>
         <CardContent>
