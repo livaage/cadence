@@ -23,6 +23,157 @@ from . import scaffold as _scaffold
 from . import autoregister as _autoregister
 
 
+_PLATFORM_LABELS = {
+    "vscode": "VSCode",
+    "jpy_session_name": "Jupyter Server",
+    "jupyter_server": "Jupyter Server",
+    "colab": "Google Colab (live)",
+    "kaggle": "Kaggle (interactive)",
+    "upload": "uploaded file",
+}
+
+
+def _detected_banner(source) -> str:
+    """One-line banner describing where we found the notebook. Path-backed
+    sources print the path; Colab/upload sources print the platform label."""
+    label = _PLATFORM_LABELS.get(source.platform, source.platform)
+    if source.path is not None:
+        return (
+            f'<div style="font-size: 0.85em; color: #334155; margin-bottom: 4px;">'
+            f'Detected notebook: <code>{source.path}</code></div>'
+        )
+    return (
+        f'<div style="font-size: 0.85em; color: #334155; margin-bottom: 4px;">'
+        f'Detected notebook from <strong>{label}</strong> '
+        f'(no on-disk path — output will land in <code>{os.getcwd()}</code>).</div>'
+    )
+
+
+def _render_upload_widget(magic_name: str, line: str = ""):
+    """Universal fallback when notebook auto-detection fails on every
+    supported platform (Kaggle by design, anything exotic by accident).
+    Renders an ipywidgets FileUpload that takes the teacher's .ipynb
+    directly.
+
+    When the teacher drops a file, the callback:
+      1. Stashes the parsed notebook in `scaffold._uploaded_notebook_cache`.
+      2. Re-invokes the original magic via `shell.run_line_magic(magic_name,
+         line)` — same args as the user typed. The next detection pass pops
+         the cache and the flow continues without losing `--all`/`--force`/etc.
+
+    Tailors copy per platform (Kaggle-specific download breadcrumb when we
+    know we're on Kaggle, generic otherwise).
+    """
+    try:
+        import ipywidgets as widgets
+    except ImportError:
+        return display(HTML(
+            '<div style="color: red;">❌ Could not auto-detect the running '
+            'notebook and <code>ipywidgets</code> is not installed for the '
+            'upload fallback. Either install ipywidgets '
+            '(<code>pip install ipywidgets</code>) and re-run, or pass the '
+            f'.ipynb path explicitly: <code>%{magic_name} path/to/teacher.ipynb</code>.</div>'
+        ))
+
+    uploader = widgets.FileUpload(
+        accept='.ipynb', multiple=False,
+        description='Upload .ipynb',
+        button_style='primary',
+    )
+    out_area = widgets.Output()
+
+    def _on_upload(change):  # noqa: ARG001 — widget callback signature
+        out_area.clear_output()
+        with out_area:
+            value = uploader.value
+            if not value:
+                return
+            # ipywidgets 8 returns a tuple of dicts; ipywidgets 7 a dict-of-dicts.
+            entry = value[0] if isinstance(value, (list, tuple)) else next(iter(value.values()))
+            content = entry.get('content') if isinstance(entry, dict) else entry['content']
+            try:
+                _scaffold.stash_uploaded_notebook(bytes(content))
+            except Exception as e:
+                display(HTML(
+                    f'<div style="color: red;">❌ That file didn\'t parse as a '
+                    f'valid .ipynb: {e}</div>'
+                ))
+                return
+            # Re-run the original magic with the user's original args. The
+            # stashed upload is the first thing detect_notebook_source() pops,
+            # so flags like `--all` / `--force` carry through naturally.
+            from IPython import get_ipython
+            ip = get_ipython()
+            if ip is None:
+                display(HTML(
+                    f'<div style="color: #15803d;">✅ Uploaded. Re-run '
+                    f'<code>%{magic_name} {line}</code> to continue.</div>'
+                ))
+                return
+            display(HTML(
+                f'<div style="color: #15803d;">✅ Uploaded — continuing '
+                f'<code>%{magic_name} {line}</code>...</div>'
+            ))
+            ip.run_line_magic(magic_name, line)
+
+    uploader.observe(_on_upload, names='value')
+
+    # Tailored Kaggle copy — the .ipynb genuinely isn't on the kernel
+    # filesystem there, so spelling out the download path is the difference
+    # between "this is broken" and "ok, do this one thing".
+    if _scaffold.is_kaggle():
+        body = (
+            '<div style="font-size: 0.9em;">Kaggle doesn\'t expose the running '
+            'notebook to the kernel\'s filesystem. To continue:</div>'
+            '<ol style="font-size: 0.9em; margin: 6px 0 6px 22px;">'
+            '<li>In Kaggle: <strong>File → Download Notebook (.ipynb)</strong> '
+            '(or use the share menu).</li>'
+            '<li>Drag the downloaded <code>.ipynb</code> onto the widget below.</li>'
+            '</ol>'
+            f'<div style="font-size: 0.85em; color: #334155;">The same magic '
+            f'(<code>%{magic_name} {line}</code>) will resume automatically '
+            'once the upload completes — flags are preserved.</div>'
+        )
+    else:
+        body = (
+            '<div style="font-size: 0.9em;">Drop your teacher <code>.ipynb</code> '
+            f'on the widget below — the same magic '
+            f'(<code>%{magic_name} {line}</code>) will resume automatically '
+            'once the upload completes. Flags are preserved.</div>'
+        )
+
+    display(HTML(
+        '<div style="border: 1px solid #b45309; border-radius: 6px; '
+        'padding: 10px 12px; margin: 6px 0; background: #fffbeb; '
+        'line-height: 1.5; color: #1f2937;">'
+        '<div style="font-weight: 600; color: #b45309; margin-bottom: 4px;">'
+        '⚠ Could not auto-detect the running notebook</div>'
+        f'{body}</div>'
+    ))
+    display(uploader, out_area)
+
+
+def _render_download_links(out_path) -> None:
+    """After scaffold/autoregister writes a file, give the teacher a clickable
+    handle to it. On Colab also kick off `files.download(...)` — Colab's file
+    sidebar doesn't open arbitrary `.ipynb`s as new notebooks, so the
+    download is the only sane "now what?" path.
+    """
+    try:
+        from IPython.display import FileLink
+        display(FileLink(str(out_path)))
+    except Exception:
+        pass
+    if _scaffold.is_colab():
+        try:
+            from google.colab import files as _colab_files
+            _colab_files.download(str(out_path))
+        except Exception:
+            # Browser blocked the auto-download (some Colab configs do); the
+            # FileLink above still works as a manual fallback.
+            pass
+
+
 def _strip_inline_comment(line: str) -> str:
     """Strip a trailing Python-style `#` comment from a magic line argument.
 
@@ -432,7 +583,7 @@ class CadenceMagic(Magics):
         except Exception as e:
             return display(HTML(
                 f'<div style="color: red;">❌ Login failed: {e}</div>'
-                f'<div style="font-size: 0.9em; color: #475569; margin-top: 4px;">'
+                f'<div style="font-size: 0.9em; color: #334155; margin-top: 4px;">'
                 f'If you signed up with GitHub and haven\'t set a Jupyter password, '
                 f'<a href="{web_url.rstrip("/")}/teacher/account?prompt=password" target="_blank">set one here</a> '
                 f'then retry, or paste a JWT with <code>%cadence_login --token YOUR_JWT</code>.'
@@ -458,7 +609,7 @@ class CadenceMagic(Magics):
                 <div style="font-weight: 600; color: #15803d;">
                     ✅ Signed in as {me.get("username", "?")}
                 </div>
-                <div style="margin-top: 4px; font-size: 0.85em; color: #475569;">
+                <div style="margin-top: 4px; font-size: 0.85em; color: #334155;">
                     {me.get("email", "?")} · cached in <code>~/.cadence/credentials.yaml</code>
                 </div>
             </div>
@@ -471,7 +622,7 @@ class CadenceMagic(Magics):
         if self.api:
             self.api.clear_auth_token()
         display(HTML(
-            '<div style="color: #475569;">👋 Signed out. The JWT cache at '
+            '<div style="color: #334155;">👋 Signed out. The JWT cache at '
             '<code>~/.cadence/credentials.yaml</code> has been removed.</div>'
         ))
 
@@ -482,7 +633,7 @@ class CadenceMagic(Magics):
             return
         if not creds_store.get_jwt():
             return display(HTML(
-                '<div style="color: #475569;">Not signed in. Run '
+                '<div style="color: #334155;">Not signed in. Run '
                 '<code>%cadence_login</code> first.</div>'
             ))
         try:
@@ -528,7 +679,7 @@ class CadenceMagic(Magics):
         privacy_url = self._privacy_url()
         display(HTML(f'''
             <div style="border: 1px solid #b45309; border-radius: 6px;
-                        padding: 12px; margin: 8px 0; background: #fffbeb;">
+                        padding: 12px; margin: 8px 0; background: #fffbeb; color: #1f2937;">
                 <div style="font-weight: 600; color: #b45309;">
                     📜 First-time setup
                 </div>
@@ -644,7 +795,7 @@ class CadenceMagic(Magics):
                 </div>
 
                 <div style="margin-bottom: 12px;">
-                    <div style="font-size: 0.85em; color: #475569;">Or paste this snippet at the top of the student notebook:</div>
+                    <div style="font-size: 0.85em; color: #334155;">Or paste this snippet at the top of the student notebook:</div>
                     <pre style="background: white; padding: 8px 10px; margin: 4px 0; border-radius: 3px; font-size: 0.9em; overflow-x: auto;">%load_ext cadence
 %cadence_session {join_code} "your-name"</pre>
                     {self._copy_button(student_snippet, "Copy snippet")}
@@ -653,16 +804,16 @@ class CadenceMagic(Magics):
                 <div style="margin-bottom: 12px;">
                     <a href="{dash}" target="_blank">Open live dashboard</a>
                     {self._copy_button(dash, "Copy URL")}
-                    <div style="font-size: 0.85em; color: #475569; margin-top: 2px;">{dash_hint}</div>
+                    <div style="font-size: 0.85em; color: #334155; margin-top: 2px;">{dash_hint}</div>
                 </div>
 
-                <div style="font-size: 0.85em; color: #475569; margin-bottom: 12px;">
+                <div style="font-size: 0.85em; color: #334155; margin-bottom: 12px;">
                     Teacher token (keep secret):
                     <code style="background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
                     {self._copy_button(teacher_token, "Copy token")}
                 </div>
 
-                <div style="font-size: 0.85em; color: #475569; padding: 8px 10px; background: white; border-radius: 4px; margin-bottom: 8px;">
+                <div style="font-size: 0.85em; color: #334155; padding: 8px 10px; background: white; border-radius: 4px; margin-bottom: 8px;">
                     <strong>Retention:</strong> after <strong>{retention_word}</strong> of inactivity,
                     each student session is <strong>de-identified</strong> — the display name is
                     removed but per-checkpoint stats (solve rates, common wrong answers, timing)
@@ -673,7 +824,7 @@ class CadenceMagic(Magics):
                     <code>%cadence_delete_lesson "{lesson["name"]}" --yes</code>.
                 </div>
 
-                <div style="font-size: 0.8em; color: #64748b;">
+                <div style="font-size: 0.8em; color: #334155;">
                     Cached in <code>~/.cadence/lessons.yaml</code>.
                     Other commands: <code>%cadence_clone_lesson</code>,
                     <code>%cadence_attach_lesson … --to "&lt;course&gt;"</code>.
@@ -725,7 +876,7 @@ class CadenceMagic(Magics):
             if resp:
                 display(HTML(
                     f'<div style="background: #fffbeb; border-left: 3px solid #b45309; '
-                    f'padding: 8px 12px; margin-bottom: 8px; font-size: 0.9em;">'
+                    f'padding: 8px 12px; margin-bottom: 8px; font-size: 0.9em; color: #1f2937;">'
                     f'A lesson named <code>{name}</code> is already cached on this machine — '
                     f'loaded it instead of creating a duplicate. The existing join code still '
                     f'works; new students who run <code>%cadence_session</code> with it will '
@@ -740,7 +891,7 @@ class CadenceMagic(Magics):
                     f'<code>%cadence_delete_lesson "{name}" --yes</code>, then re-run.<br>'
                     f'· You truly want two lessons with the exact same name: re-run with '
                     f'<code>--force</code>.<br>'
-                    f'<em style="color: #475569; font-size: 0.85em;">Note: a "session" is a '
+                    f'<em style="color: #334155; font-size: 0.85em;">Note: a "session" is a '
                     f'single student\'s join. The system creates them automatically on every '
                     f'<code>%cadence_session</code> call — you never have to "make" one.</em>'
                     f'</div>'
@@ -849,14 +1000,14 @@ class CadenceMagic(Magics):
         name = teacher.get("lesson_name") or teacher.get("course_name") or ""
         display(HTML(f'''
             <div style="background: white; padding: 48px 24px; margin: 16px 0;
-                        border: 2px solid #1976d2; border-radius: 12px; text-align: center;">
+                        border: 2px solid #1976d2; border-radius: 12px; text-align: center; color: #1f2937;">
                 <div style="color: #1976d2; font-size: 1.1em; margin-bottom: 20px; opacity: 0.8;">
                     Join code for <strong>{name}</strong>
                 </div>
                 <div style="font-family: 'JetBrains Mono', 'Menlo', monospace;
                             font-size: 4.5em; font-weight: 700; letter-spacing: 0.04em;
                             color: #0d47a1; line-height: 1.1;">{code}</div>
-                <div style="color: #475569; margin-top: 28px; font-size: 0.95em;">
+                <div style="color: #334155; margin-top: 28px; font-size: 0.95em;">
                     Run in a notebook: <code style="background: #f0f0f0; padding: 2px 6px;
                     border-radius: 3px;">%cadence_session {code} "your-name"</code>
                 </div>
@@ -898,18 +1049,18 @@ class CadenceMagic(Magics):
                 <div style="margin-bottom: 12px;">
                     <a href="{dash}" target="_blank">Open course dashboard</a>
                     {self._copy_button(dash, "Copy URL")}
-                    <div style="font-size: 0.85em; color: #475569; margin-top: 2px;">
+                    <div style="font-size: 0.85em; color: #334155; margin-top: 2px;">
                         Saved to your library — use the dashboard's <strong>Display join code</strong> button for projecting in class.
                     </div>
                 </div>
 
-                <div style="font-size: 0.85em; color: #475569; margin-bottom: 12px;">
+                <div style="font-size: 0.85em; color: #334155; margin-bottom: 12px;">
                     Teacher token (keep secret):
                     <code style="background: white; padding: 1px 6px; border-radius: 3px;">{teacher_token[:8]}…</code>
                     {self._copy_button(teacher_token, "Copy token")}
                 </div>
 
-                <div style="font-size: 0.85em; color: #475569; padding: 8px 10px; background: white; border-radius: 4px; margin-bottom: 8px;">
+                <div style="font-size: 0.85em; color: #334155; padding: 8px 10px; background: white; border-radius: 4px; margin-bottom: 8px;">
                     <strong>Retention:</strong> after <strong>{retention_word}</strong> of inactivity,
                     each student session is <strong>de-identified</strong> — the display name is
                     removed but per-checkpoint stats are kept for the dashboard. Default 90 days
@@ -919,7 +1070,7 @@ class CadenceMagic(Magics):
                     Notebooks attached to this course inherit its retention automatically.
                 </div>
 
-                <div style="font-size: 0.8em; color: #64748b;">
+                <div style="font-size: 0.8em; color: #334155;">
                     Add notebooks with <code>%cadence_add_notebook "&lt;name&gt;"</code>.
                     Wipe with <code>%cadence_delete_course "{course["name"]}" --yes</code>.
                 </div>
@@ -952,12 +1103,12 @@ class CadenceMagic(Magics):
         if not creds_store.get_jwt():
             return display(HTML(
                 '<div style="border: 1px solid #b45309; border-radius: 6px;'
-                ' padding: 10px; margin: 8px 0; background: #fffbeb;">'
+                ' padding: 10px; margin: 8px 0; background: #fffbeb; color: #1f2937;">'
                 '<strong style="color: #b45309;">🔒 Sign in required</strong><br>'
                 'Courses are tied to a teacher account so we can authorize student'
                 ' rights requests against a named controller. Run'
                 ' <code>%cadence_login</code> first, then re-run this command.<br>'
-                '<span style="font-size: 0.85em; color: #475569;">Quick one-off lessons'
+                '<span style="font-size: 0.85em; color: #334155;">Quick one-off lessons'
                 ' (<code>%cadence_create_lesson</code>) do not require an account.</span>'
                 '</div>'
             ))
@@ -982,7 +1133,7 @@ class CadenceMagic(Magics):
             if resp:
                 display(HTML(
                     f'<div style="background: #fffbeb; border-left: 3px solid #b45309; '
-                    f'padding: 8px 12px; margin-bottom: 8px; font-size: 0.9em;">'
+                    f'padding: 8px 12px; margin-bottom: 8px; font-size: 0.9em; color: #1f2937;">'
                     f'A course named <code>{name}</code> is already cached on this machine — '
                     f'loaded it instead of creating a duplicate. The existing join code still '
                     f'works; new students will each get their own enrollment.<br><br>'
@@ -1014,7 +1165,7 @@ class CadenceMagic(Magics):
         if retention is not None and retention > 180 and not args.yes_long_retention:
             return display(HTML(
                 f'<div style="border: 1px solid #b45309; border-radius: 6px;'
-                f' padding: 10px; margin: 8px 0; background: #fffbeb;">'
+                f' padding: 10px; margin: 8px 0; background: #fffbeb; color: #1f2937;">'
                 f'<strong style="color: #b45309;">⚠ Long retention</strong><br>'
                 f'You asked for <strong>{retention} days</strong> of per-session'
                 f' retention. Cohort-level aggregates are kept indefinitely already;'
@@ -1208,11 +1359,11 @@ class CadenceMagic(Magics):
 
         display(HTML(f'''
             <div style="border: 1px solid #15803d; border-radius: 6px;
-                        padding: 10px; margin: 8px 0; background: #f0fdf4;">
+                        padding: 10px; margin: 8px 0; background: #f0fdf4; color: #1f2937;">
                 <div style="font-weight: 600; color: #15803d;">
                     🔗 Attached <code>{lesson_name}</code> to course <code>{course_name}</code>
                 </div>
-                <div style="margin-top: 6px; font-size: 0.85em; color: #475569;">
+                <div style="margin-top: 6px; font-size: 0.85em; color: #334155;">
                     The course dashboard now shows it as one of the notebooks.
                     Students who join via the course code can pick it with
                     <code>%cadence_notebook "{lesson_name}"</code>.
@@ -1258,7 +1409,7 @@ class CadenceMagic(Magics):
         except Exception as e:
             return display(HTML(f'<div style="color: red;">❌ Detach failed: {e}</div>'))
         display(HTML(
-            f'<div style="color: #475569;">🔗 Detached <code>{lesson_name}</code> from course '
+            f'<div style="color: #334155;">🔗 Detached <code>{lesson_name}</code> from course '
             f'<code>{course_name}</code>. The lesson itself is unchanged.</div>'
         ))
 
@@ -1287,7 +1438,7 @@ class CadenceMagic(Magics):
         if not args.yes:
             return display(HTML(
                 f'<div style="border: 1px solid #b91c1c; border-radius: 6px;'
-                f' padding: 10px; margin: 8px 0; background: #fef2f2;">'
+                f' padding: 10px; margin: 8px 0; background: #fef2f2; color: #1f2937;">'
                 f'<strong style="color: #b91c1c;">⚠ Confirm deletion</strong><br>'
                 f'This wipes <code>{name}</code> AND every student session, attempt, code'
                 f' submission, and solution reveal attached to it. <strong>Cannot be undone.</strong><br>'
@@ -1330,7 +1481,7 @@ class CadenceMagic(Magics):
         if not args.yes:
             return display(HTML(
                 f'<div style="border: 1px solid #b91c1c; border-radius: 6px;'
-                f' padding: 10px; margin: 8px 0; background: #fef2f2;">'
+                f' padding: 10px; margin: 8px 0; background: #fef2f2; color: #1f2937;">'
                 f'<strong style="color: #b91c1c;">⚠ Confirm deletion</strong><br>'
                 f'This wipes course <code>{name}</code> and every student enrollment +'
                 f' attempts joined via its code. <strong>Cannot be undone.</strong><br>'
@@ -1468,7 +1619,7 @@ class CadenceMagic(Magics):
         display(HTML(f'''
             <div style="border: 1px solid #1976d2; border-radius: 6px;
                         padding: 12px; margin: 8px 0; background: #f0f7ff;
-                        font-size: 0.95em;">
+                        font-size: 0.95em; color: #1f2937;">
                 <div style="font-weight: 600; color: #1976d2; margin-bottom: 6px;">
                     📋 Before you join: how Cadence handles your data
                 </div>
@@ -1477,7 +1628,8 @@ class CadenceMagic(Magics):
                     can see how the class is doing and help where needed.
                 </div>
                 <div style="margin: 6px 0; padding: 6px 10px; background: #fffceb;
-                            border-left: 3px solid #b45309; font-size: 0.9em;">
+                            border-left: 3px solid #b45309; font-size: 0.9em;
+                            color: #1f2937;">
                     You can use a pseudonym (like <code>birb_42</code>) instead of
                     your real name, and you can remove everything any time with
                     <code>%cadence_delete_my_data</code>.
@@ -1499,7 +1651,7 @@ class CadenceMagic(Magics):
                         <code>%cadence_export_my_data</code>,
                         <code>%cadence_delete_my_data</code>.</li>
                 </ul>
-                <div style="font-size: 0.85em; color: #475569; margin-top: 6px;">
+                <div style="font-size: 0.85em; color: #334155; margin-top: 6px;">
                     <a href="{privacy_url}" target="_blank">Full privacy notice</a>
                     · Questions or complaints: <code>privacy@cadence-dash.com</code>
                 </div>
@@ -1678,7 +1830,7 @@ class CadenceMagic(Magics):
             f'<tr><td><code>{a["checkpoint_id"]}</code></td>'
             f'<td>{a["attempt_num"]}</td>'
             f'<td>{"✅" if a["is_correct"] else "❌"}</td>'
-            f'<td style="font-size: 0.85em; color: #475569;">{a["created_at"]}</td></tr>'
+            f'<td style="font-size: 0.85em; color: #334155;">{a["created_at"]}</td></tr>'
             for a in attempts
         ) or '<tr><td colspan="4"><em>none</em></td></tr>'
 
@@ -1686,13 +1838,13 @@ class CadenceMagic(Magics):
             f'<tr><td><code>{s["checkpoint_id"]}</code></td>'
             f'<td>{len((s["code"] or "").splitlines())} lines</td>'
             f'<td>{"image attached" if s["has_image"] else "—"}</td>'
-            f'<td style="font-size: 0.85em; color: #475569;">{s["submitted_at"]}</td></tr>'
+            f'<td style="font-size: 0.85em; color: #334155;">{s["submitted_at"]}</td></tr>'
             for s in submissions
         ) or '<tr><td colspan="4"><em>none</em></td></tr>'
 
         display(HTML(f'''
             <div style="border: 1px solid #1976d2; border-radius: 6px;
-                        padding: 12px; margin: 8px 0; background: #f8fbff;">
+                        padding: 12px; margin: 8px 0; background: #f8fbff; color: #1f2937;">
                 <div style="font-weight: 600; color: #1976d2;">
                     📂 Your data in this session
                 </div>
@@ -1714,7 +1866,7 @@ class CadenceMagic(Magics):
                     </tr>
                     {submission_rows}
                 </table>
-                <div style="margin-top: 10px; font-size: 0.85em; color: #475569;">
+                <div style="margin-top: 10px; font-size: 0.85em; color: #334155;">
                     Solution reveals: {len(reveals)}
                     · Download with <code>%cadence_export_my_data</code>
                     · Delete with <code>%cadence_delete_my_data</code>
@@ -1773,7 +1925,7 @@ class CadenceMagic(Magics):
         if not args.yes:
             return display(HTML(
                 '<div style="border: 1px solid #b91c1c; border-radius: 6px;'
-                ' padding: 10px; margin: 8px 0; background: #fef2f2;">'
+                ' padding: 10px; margin: 8px 0; background: #fef2f2; color: #1f2937;">'
                 '<strong style="color: #b91c1c;">⚠ Confirm deletion</strong><br>'
                 'This wipes your display name, every attempt, every code submission,'
                 ' and every solution reveal for this session. <strong>Cannot be undone.</strong><br>'
@@ -1810,9 +1962,13 @@ class CadenceMagic(Magics):
                    'you have manual `# cadence:checkpoint` markers somewhere. '
                    'Without this flag, manual markers take over when present.')
     @argument('--reveal-after', type=int, default=None,
-              help='Add solution reveals after N wrong attempts. Skip to be '
-                   'prompted interactively; pass `--reveal-after 0` to disable '
-                   'reveals without being asked.')
+              help='Solutions reveal after N wrong attempts (default 3). Pass '
+                   '`--reveal-after 0` to disable reveals notebook-wide '
+                   '(equivalent to --no-solutions).')
+    @argument('--no-solutions', action='store_true',
+              help='Disable solution reveals notebook-wide. Per-cell '
+                   '`# cadence:no-solution` markers still work the same way; '
+                   'this is the global opt-out.')
     @argument('--force', action='store_true',
               help='Overwrite the output file if it already exists.')
     @line_magic
@@ -1838,54 +1994,65 @@ class CadenceMagic(Magics):
         """
         from pathlib import Path
         args = parse_argstring(self.cadence_autoregister, line)
+        teacher_nb = None
+        src: Optional[Path] = None
         if args.src:
             src = Path(args.src)
         else:
-            detected = _scaffold.detect_current_notebook()
-            if detected is None:
-                return display(HTML(
-                    '<div style="color: red;">❌ Could not auto-detect the current notebook. '
-                    'Pass the path explicitly: '
-                    '<code>%cadence_autoregister path/to/teacher.ipynb</code></div>'
-                ))
-            src = detected
-            display(HTML(
-                f'<div style="font-size: 0.85em; color: #475569; margin-bottom: 4px;">'
-                f'Auto-detected notebook: <code>{src}</code></div>'
-            ))
+            source = _scaffold.detect_notebook_source()
+            if source is None:
+                return _render_upload_widget("cadence_autoregister", line)
+            src = source.path
+            teacher_nb = source.notebook
+            display(HTML(_detected_banner(source)))
 
-        target = Path(args.out) if args.out else src.with_name(f"{src.stem}_registered.ipynb")
+        if args.out:
+            target = Path(args.out)
+        elif src is not None:
+            target = src.with_name(f"{src.stem}_registered.ipynb")
+        else:
+            target = Path.cwd() / "cadence_registered.ipynb"
         if target.exists() and not args.force:
             return display(HTML(
                 f'<div style="color: red;">❌ <code>{target}</code> already exists. '
                 f'Re-run with <code>--force</code> to overwrite.</div>'
             ))
 
-        # Interactive prompt for solution reveals (skip if user passed --reveal-after).
+        # Solutions are auto-revealed by default in the registered notebook
+        # — the teacher's reference code becomes `--solution-code` on each
+        # checkpoint. The interactive prompt now defaults ON (empty = use the
+        # default 3 attempts). Opt out globally with `--no-solutions` or
+        # `--reveal-after 0`; opt out per checkpoint with `# cadence:no-solution`.
         reveal_after = args.reveal_after
-        if reveal_after is None:
+        no_solutions = args.no_solutions
+        if no_solutions:
+            reveal_after = 0  # global suppression — _register_line_for sees this
+        elif reveal_after is None:
             try:
                 ans = input(
-                    "Reveal solutions to students after N wrong attempts? "
-                    "[empty=no, default 3 if just yes]: "
+                    "Auto-reveal solutions after N wrong attempts? "
+                    "[empty=default 3, 0=disable, n=disable]: "
                 ).strip().lower()
             except EOFError:
                 ans = ""
-            if ans in ("", "n", "no"):
-                reveal_after = None
-            elif ans in ("y", "yes"):
+            if ans in ("n", "no", "0"):
+                reveal_after = 0
+                no_solutions = True
+            elif ans in ("", "y", "yes"):
                 reveal_after = 3
             else:
                 try:
                     reveal_after = int(ans)
+                    if reveal_after == 0:
+                        no_solutions = True
                 except ValueError:
                     return display(HTML(
                         f'<div style="color: red;">❌ Could not parse '
                         f'<code>{ans}</code> as a number. Re-run and enter a '
-                        f'plain integer (or empty for no reveals).</div>'
+                        f'plain integer (or empty for the default of 3).</div>'
                     ))
         elif reveal_after == 0:
-            reveal_after = None  # `--reveal-after 0` is the non-interactive "no"
+            no_solutions = True
 
         # Optional sign-in. Only prompts if the teacher isn't already signed
         # in; signing in lets them attach the lesson to a course and have it
@@ -1962,9 +2129,11 @@ class CadenceMagic(Magics):
             result = _autoregister.autoregister(
                 src_path=src,
                 user_ns=self.shell.user_ns,
+                teacher_nb=teacher_nb,
                 lesson_name=args.lesson_name,
                 out_path=target,
                 reveal_after_attempts=reveal_after,
+                no_solutions=no_solutions,
                 force_all=args.force_all,
                 course_choice=course_choice,
                 retention_days=retention_days,
@@ -1984,7 +2153,7 @@ class CadenceMagic(Magics):
 
         ok_rows = "".join(
             f'<tr><td style="padding: 2px 8px;"><code>{c.checkpoint_id}</code></td>'
-            f'<td style="padding: 2px 8px; color: #475569;">{c.comparator}</td>'
+            f'<td style="padding: 2px 8px; color: #334155;">{c.comparator}</td>'
             f'<td style="padding: 2px 8px; font-family: monospace;">'
             f'{(json.dumps(c.expected.get("value")) if c.expected else "—")[:60]}</td></tr>'
             for c in result.checkpoints if c.error is None
@@ -1997,7 +2166,7 @@ class CadenceMagic(Magics):
             )
             fail_html = (
                 f'<div style="margin-top: 8px; padding: 8px 10px; background: #fffbeb;'
-                f' border-left: 3px solid #b45309; font-size: 0.85em;">'
+                f' border-left: 3px solid #b45309; font-size: 0.85em; color: #1f2937;">'
                 f'<strong>⚠ {result.n_failed} cell(s) skipped:</strong>'
                 f'<ul style="margin: 4px 0 0 0; padding-left: 20px;">{fail_rows}</ul>'
                 f'</div>'
@@ -2012,12 +2181,12 @@ class CadenceMagic(Magics):
                 <div style="font-weight: 600; color: #15803d; margin-bottom: 6px;">
                     ✅ Wrote <code>{result.out_path}</code>
                 </div>
-                <div style="font-size: 0.9em; color: #475569; margin-bottom: 8px;">
+                <div style="font-size: 0.9em; color: #334155; margin-bottom: 8px;">
                     {result.n_checkpoints} checkpoint(s) detected ({result.mode} mode){reveal_html} ·
                     lesson "<code>{result.lesson_name}</code>"
                 </div>
                 <table style="font-size: 0.85em; border-collapse: collapse; margin-top: 4px;">
-                    <thead><tr style="color: #475569;">
+                    <thead><tr style="color: #334155;">
                         <th style="text-align: left; padding: 2px 8px;">id</th>
                         <th style="text-align: left; padding: 2px 8px;">comparator</th>
                         <th style="text-align: left; padding: 2px 8px;">expected</th>
@@ -2025,13 +2194,14 @@ class CadenceMagic(Magics):
                     <tbody>{ok_rows}</tbody>
                 </table>
                 {fail_html}
-                <div style="margin-top: 10px; font-size: 0.85em; color: #475569;">
+                <div style="margin-top: 10px; font-size: 0.85em; color: #334155;">
                     Next: open <code>{result.out_path.name}</code>, run the setup cell at the
                     top to register the lesson, then run <code>%cadence_scaffold</code> from
                     inside it to produce the student notebook.
                 </div>
             </div>
         '''))
+        _render_download_links(result.out_path)
 
     @magic_arguments()
     @argument('src', nargs='?', default=None,
@@ -2061,23 +2231,24 @@ class CadenceMagic(Magics):
         """
         from pathlib import Path
         args = parse_argstring(self.cadence_scaffold, line)
+        teacher_nb = None
+        src: Optional[Path] = None
         if args.src:
             src = Path(args.src)
         else:
-            detected = _scaffold.detect_current_notebook()
-            if detected is None:
-                return display(HTML(
-                    '<div style="color: red;">❌ Could not auto-detect the current notebook. '
-                    'Pass the path explicitly: '
-                    '<code>%cadence_scaffold path/to/teacher.ipynb</code></div>'
-                ))
-            src = detected
-            display(HTML(
-                f'<div style="font-size: 0.85em; color: #475569; margin-bottom: 4px;">'
-                f'Auto-detected notebook: <code>{src}</code></div>'
-            ))
+            source = _scaffold.detect_notebook_source()
+            if source is None:
+                return _render_upload_widget("cadence_scaffold", line)
+            src = source.path
+            teacher_nb = source.notebook
+            display(HTML(_detected_banner(source)))
         out = Path(args.out) if args.out else None
-        target = out or src.with_name(f"{src.stem}_student.ipynb")
+        if out is not None:
+            target = out
+        elif src is not None:
+            target = src.with_name(f"{src.stem}_student.ipynb")
+        else:
+            target = Path.cwd() / "cadence_student.ipynb"
         if target.exists() and not args.force:
             return display(HTML(
                 f'<div style="color: red;">❌ <code>{target}</code> already exists. '
@@ -2086,7 +2257,8 @@ class CadenceMagic(Magics):
         try:
             result = _scaffold.scaffold(
                 src_path=src,
-                out_path=out,
+                teacher_nb=teacher_nb,
+                out_path=target,
                 join_code=args.join_code,
                 name_placeholder=args.name,
             )
@@ -2112,7 +2284,7 @@ class CadenceMagic(Magics):
             warn_html = (
                 f'<div style="margin-top: 6px; padding: 6px 10px;'
                 f' background: #fffbeb; border-left: 3px solid #b45309;'
-                f' font-size: 0.9em;">'
+                f' font-size: 0.9em; color: #1f2937;">'
                 f'⚠ {len(unregistered)} checkpoint id(s) in the notebook are not '
                 f'registered on the active lesson yet — students will see '
                 f'"unknown checkpoint" when they submit. Register them with '
@@ -2130,7 +2302,7 @@ class CadenceMagic(Magics):
         )
         display(HTML(f'''
             <div style="border: 1px solid #15803d; border-radius: 6px;
-                        padding: 10px; margin: 8px 0; background: #f0fdf4;">
+                        padding: 10px; margin: 8px 0; background: #f0fdf4; color: #1f2937;">
                 <div style="font-weight: 600; color: #15803d;">
                     ✅ Wrote <code>{result.out_path}</code>
                 </div>
@@ -2144,6 +2316,7 @@ class CadenceMagic(Magics):
                 {warn_html}
             </div>
         '''))
+        _render_download_links(result.out_path)
 
     # ------------------------------------------------------------------
     # Teacher: register / self-test
@@ -2207,6 +2380,30 @@ class CadenceMagic(Magics):
 
         hint_after = max(1, int(args.hint_after_attempts or 1))
 
+        # Decode the `--solution-code` value. Autoregister emits `b64:<base64>`
+        # so multi-line teacher solutions (with apostrophes, regex literals,
+        # backslashes — anything that can trip POSIX-shell quoting through the
+        # .ipynb → input-pipeline → magic_arguments chain) survive intact.
+        # Hand-written single-line code without the `b64:` prefix passes
+        # through unchanged. A legacy `"...json string..."` form from 0.2.8 is
+        # also soft-decoded so older notebooks keep working.
+        solution_code = args.solution_code
+        if isinstance(solution_code, str) and solution_code.startswith("b64:"):
+            try:
+                import base64 as _b64
+                solution_code = _b64.b64decode(
+                    solution_code[4:].encode("ascii")
+                ).decode("utf-8")
+            except Exception:
+                pass  # leave args.solution_code as-is and let the API reject it
+        elif isinstance(solution_code, str) and solution_code.startswith('"'):
+            try:
+                decoded = json.loads(solution_code)
+                if isinstance(decoded, str):
+                    solution_code = decoded
+            except (ValueError, TypeError):
+                pass
+
         try:
             self.api.register_checkpoint(
                 teacher_token=teacher["teacher_token"],
@@ -2218,7 +2415,7 @@ class CadenceMagic(Magics):
                 order_index=args.order,
                 reveal_after_attempts=args.reveal_after,
                 solution_value=args.solution_value,
-                solution_code=args.solution_code,
+                solution_code=solution_code,
                 allow_submissions=args.allow_submissions,
             )
         except Exception as e:
@@ -2729,7 +2926,7 @@ class CadenceMagic(Magics):
             rows_html.append(
                 f'<tr><td colspan="2" style="padding-top: 14px; '
                 f'font-size: 0.72em; letter-spacing: 0.06em; text-transform: uppercase; '
-                f'color: #475569; font-weight: 700;">{group_name}</td></tr>'
+                f'color: #334155; font-weight: 700;">{group_name}</td></tr>'
             )
             for e in shown:
                 total_shown += 1
@@ -2765,11 +2962,11 @@ class CadenceMagic(Magics):
         display(HTML(f'''
             <div style="font-family: ui-sans-serif, system-ui, sans-serif;
                         border: 1px solid #e2e8f0; border-radius: 8px;
-                        padding: 14px 18px; margin: 6px 0; background: #fafafa;">
+                        padding: 14px 18px; margin: 6px 0; background: #fafafa; color: #1f2937;">
                 <div style="font-weight: 600; font-size: 1rem; margin-bottom: 2px;">
                     Cadence magics cheatsheet
                 </div>
-                <div style="font-size: 0.82em; color: #64748b; margin-bottom: 8px;">
+                <div style="font-size: 0.82em; color: #334155; margin-bottom: 8px;">
                     {total_shown} command{'s' if total_shown != 1 else ''}{header_filter}.
                     Append <code>?</code> to any magic for full argument help —
                     e.g. <code>%cadence_register?</code>.

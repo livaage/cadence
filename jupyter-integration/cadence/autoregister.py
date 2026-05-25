@@ -40,6 +40,7 @@ from .scaffold import (
     CHECKPOINT_MARKER_RE,
     SOLUTION_MARKER_RE,
     TASK_MARKER_RE,
+    _extract_pip_install_lines,
     strip_hide_blocks,
 )
 
@@ -47,11 +48,49 @@ from .scaffold import (
 HINT_MARKER_RE = re.compile(
     r"^[ \t]*#\s*cadence:hint:\s*(?P<text>.+?)\s*$", re.MULTILINE
 )
+# Per-cell opt-out of the default solution reveal. When present, this
+# specific checkpoint gets no `--solution-code` / `--solution-value` /
+# `--reveal-after` even when global reveals are on. Use sparingly — best
+# when the answer is short enough that revealing it is basically giving
+# the question away.
+NO_SOLUTION_MARKER_RE = re.compile(
+    r"^[ \t]*#\s*cadence:no-solution\s*$", re.MULTILINE
+)
+# Per-cell override of the global `--reveal-after-attempts` value.
+# `# cadence:reveal-after 5` makes solutions unlock after 5 wrong tries
+# on this checkpoint specifically. 0 = never reveal for this cell.
+REVEAL_AFTER_MARKER_RE = re.compile(
+    r"^[ \t]*#\s*cadence:reveal-after\s+(?P<n>\d+)\s*$", re.MULTILINE
+)
+# Per-cell override of the hint-unlock threshold (number of wrong
+# attempts before the hint becomes available). Default is 1.
+HINT_AFTER_MARKER_RE = re.compile(
+    r"^[ \t]*#\s*cadence:hint-after\s+(?P<n>\d+)\s*$", re.MULTILINE
+)
+# Region pair used by scaffold to scaffold the student stub. We strip it
+# from the teacher's reference solution before sending the rest as
+# `--solution-code` — the student stub is what the student already has,
+# the reveal should show them the teacher's actual answer.
+_STARTER_REGION_RE = re.compile(
+    r"^[ \t]*#\s*cadence:starter\s*$(?:\n.*?)*?^[ \t]*#\s*cadence:end\s*$\n?",
+    re.MULTILINE,
+)
+# Any line starting with `# cadence:` (after optional whitespace) — used
+# to clean cadence-specific markers out of the solution code so it reads
+# like vanilla Python to students. Doesn't touch `<!-- cadence:* -->`
+# (those only appear in markdown cells, not code).
+_CADENCE_MARKER_LINE_RE = re.compile(
+    r"^[ \t]*#\s*cadence:[^\n]*\n?", re.MULTILINE
+)
 # Heading line in markdown — used both to slugify into auto-ids and to
 # determine "this markdown cell looks like a task description".
 HEADING_RE = re.compile(r"^\s*(#+)\s+(.+?)\s*$", re.MULTILINE)
 # Default numeric tolerance for floats with no explicit override.
 DEFAULT_FLOAT_TOLERANCE = 0.001
+# When solutions are on globally and the teacher didn't pass an explicit
+# `--reveal-after N`, this is the number of wrong attempts students need
+# before the worked solution unlocks.
+DEFAULT_REVEAL_AFTER_ATTEMPTS = 3
 
 
 @dataclass
@@ -74,6 +113,17 @@ class _Candidate:
     # from the output — they're treated as setup and copied through verbatim
     # rather than being reported as errors.
     skipped_silently: bool = False
+    # Per-cell `# cadence:no-solution` opt-out. Takes precedence over the
+    # global solutions-on default.
+    no_solution_local: bool = False
+    # Per-cell `# cadence:reveal-after N` / `# cadence:hint-after N`
+    # overrides. None means "use the global default".
+    reveal_after_local: Optional[int] = None
+    hint_after_local: Optional[int] = None
+    # Cleaned teacher source for this checkpoint — starter block + all
+    # cadence markers stripped — used as the `--solution-code` payload
+    # students see when they unlock the solution.
+    solution_code: Optional[str] = None
 
 
 @dataclass
@@ -285,6 +335,45 @@ def _extract_hint(source: str) -> Optional[str]:
 # Cell scanning — manual vs auto
 # ---------------------------------------------------------------------------
 
+def _read_per_cell_overrides(source: str) -> Dict[str, Any]:
+    """Pull the per-cell `# cadence:no-solution` / `:reveal-after N` /
+    `:hint-after N` markers out of a cell's source, returning a dict of
+    optional overrides for the _Candidate fields."""
+    overrides: Dict[str, Any] = {
+        "no_solution_local": bool(NO_SOLUTION_MARKER_RE.search(source)),
+        "reveal_after_local": None,
+        "hint_after_local": None,
+    }
+    m = REVEAL_AFTER_MARKER_RE.search(source)
+    if m:
+        overrides["reveal_after_local"] = int(m.group("n"))
+    m = HINT_AFTER_MARKER_RE.search(source)
+    if m:
+        overrides["hint_after_local"] = int(m.group("n"))
+    return overrides
+
+
+def _extract_solution_code(source: str) -> str:
+    """Build the `--solution-code` payload from a checkpoint cell's source.
+
+    We strip:
+      * the `# cadence:starter` / `# cadence:end` region (that's the student
+        stub — students already see it, the reveal should show the teacher's
+        actual answer);
+      * every `# cadence:*` marker line (checkpoint, hint, reveal-after, etc.
+        — those are metadata, not code to teach with).
+
+    Leading and trailing whitespace are collapsed so the snippet renders
+    cleanly when the student opens it."""
+    # 1. Drop the starter region entirely (block + its bracket markers).
+    cleaned = _STARTER_REGION_RE.sub("", source)
+    # 2. Drop any remaining stand-alone cadence marker lines.
+    cleaned = _CADENCE_MARKER_LINE_RE.sub("", cleaned)
+    # 3. Collapse runs of >2 blank lines that the strips can leave behind.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _scan_manual(cells: List[Any]) -> List[_Candidate]:
     """Find every code cell with `# cadence:checkpoint <id>`. Pair each with
     the most recent preceding markdown cell (used for task-marker injection
@@ -301,12 +390,14 @@ def _scan_manual(cells: List[Any]) -> List[_Candidate]:
         m = CHECKPOINT_MARKER_RE.search(cell.source)
         if not m:
             continue
+        overrides = _read_per_cell_overrides(cell.source)
         out.append(_Candidate(
             checkpoint_id=m.group("id"),
             comparator_override=m.group("comparator"),
             code_cell_index=i,
             task_cell_index=last_md_idx,
             hint=_extract_hint(cell.source),
+            **overrides,
         ))
         last_md_idx = None
     return out
@@ -345,11 +436,13 @@ def _scan_auto(cells: List[Any]) -> List[_Candidate]:
             cid = f"{base}-{suffix}"
             suffix += 1
         used_ids.add(cid)
+        overrides = _read_per_cell_overrides(cell.source)
         out.append(_Candidate(
             checkpoint_id=cid,
             code_cell_index=i,
             task_cell_index=pending_md_idx,
             hint=_extract_hint(cell.source),
+            **overrides,
         ))
         pending_md_idx = None
         auto_counter += 1
@@ -366,11 +459,24 @@ def _shell_quote_single(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
-def _register_line_for(c: _Candidate, reveal_after: Optional[int]) -> str:
+def _register_line_for(
+    c: _Candidate,
+    reveal_after: Optional[int],
+    *,
+    no_solutions: bool = False,
+) -> str:
     """Render the inline `%cadence_register …` line that goes at the top of
     each detected exercise cell. Lives WITH the solution code so when the
     teacher scrolls past an exercise they see id + comparator + expected in
-    context, instead of hunting up to a YAML block."""
+    context, instead of hunting up to a YAML block.
+
+    `reveal_after` is the global reveal-after-attempts value. Per-cell
+    `# cadence:reveal-after N` / `# cadence:hint-after N` overrides on the
+    candidate win over the global value. `no_solutions=True` (the
+    `--no-solutions` CLI flag) suppresses solution payloads everywhere;
+    `c.no_solution_local=True` (the `# cadence:no-solution` marker)
+    suppresses for just this checkpoint.
+    """
     parts = [f"%cadence_register {c.checkpoint_id}",
              f"--comparator {c.comparator}"]
     # `manual` has no expected payload — student self-attests via mark_done.
@@ -378,10 +484,38 @@ def _register_line_for(c: _Candidate, reveal_after: Optional[int]) -> str:
         parts.append(f"--expected {_shell_quote_single(json.dumps(c.expected))}")
     if c.hint:
         parts.append(f"--hint {_shell_quote_single(c.hint)}")
-    if reveal_after is not None and c.comparator != "manual" and c.value is not None:
-        parts.append(f"--reveal-after {reveal_after}")
+    # Per-cell hint-after override (independent of solution reveal logic).
+    if c.hint_after_local is not None:
+        parts.append(f"--hint-after-attempts {c.hint_after_local}")
+    # Resolve effective reveal-after: per-cell wins over global, with the
+    # no-solution opt-outs short-circuiting to "off".
+    effective_reveal = (
+        c.reveal_after_local if c.reveal_after_local is not None else reveal_after
+    )
+    suppress = no_solutions or c.no_solution_local
+    if (
+        not suppress
+        and effective_reveal is not None
+        and effective_reveal > 0
+        and c.comparator != "manual"
+        and c.value is not None
+    ):
+        parts.append(f"--reveal-after {effective_reveal}")
         sv = c.expected.get("value") if c.expected else c.value
         parts.append(f"--solution-value {_shell_quote_single(str(sv))}")
+        if c.solution_code:
+            # Base64-encode the code with a `b64:` prefix. This sidesteps every
+            # quoting headache: real Python code has apostrophes (regex literals,
+            # docstrings, "teacher's reference") that, even when properly POSIX-
+            # escaped (`'\''`), interact badly with the actual chain from .ipynb
+            # storage → IPython input pipeline → magic_arguments parser. Base64
+            # produces a pure [A-Za-z0-9+/=] payload with no chars the parser
+            # could mis-interpret. The receiver strips `b64:` and decodes.
+            import base64 as _b64
+            encoded = "b64:" + _b64.b64encode(
+                c.solution_code.encode("utf-8")
+            ).decode("ascii")
+            parts.append(f"--solution-code {_shell_quote_single(encoded)}")
     return " ".join(parts)
 
 
@@ -423,9 +557,16 @@ def _build_setup_cell(
     return nbf.v4.new_code_cell(source="\n".join(lines))
 
 
-def _post_process_cells(cells: List[Any]) -> List[Any]:
-    """Walk the output cells (excluding the very first setup cell) and:
-      * strip `%load_ext cadence` lines — the setup cell at the top has it
+_PIP_INSTALL_INLINE_RE = re.compile(r"^[ \t]*[%!]pip\s+install\s+")
+
+
+def _post_process_cells(cells: List[Any], n_structural: int = 1) -> List[Any]:
+    """Walk the output cells, skipping the first `n_structural` cells (the
+    pip-install cell if present + the setup cell), and:
+      * strip `%load_ext cadence` lines — the structural setup cell has it
+      * strip `%pip install` / `!pip install` lines — the structural pip
+        cell at the top has them; otherwise the teacher's original pip
+        cell would duplicate
       * replace `%cadence_autoregister` lines with `%cadence_scaffold` so the
         teacher's "run all cells" loop in the generated notebook ends up
         producing the student notebook in one go
@@ -433,9 +574,9 @@ def _post_process_cells(cells: List[Any]) -> List[Any]:
 
     Then if no cell contains `%cadence_scaffold`, append a fresh cell with it
     so the student-notebook generation step is always wired in."""
-    out = [cells[0]]  # setup cell — leave alone
+    out = list(cells[:n_structural])  # structural cells — leave alone
     scaffold_present = False
-    for cell in cells[1:]:
+    for cell in cells[n_structural:]:
         if cell.cell_type != "code":
             out.append(cell)
             continue
@@ -443,6 +584,8 @@ def _post_process_cells(cells: List[Any]) -> List[Any]:
         for line in cell.source.splitlines():
             stripped = line.strip()
             if stripped == "%load_ext cadence":
+                continue
+            if _PIP_INSTALL_INLINE_RE.match(line):
                 continue
             if stripped.startswith("%cadence_autoregister"):
                 new_lines.append("%cadence_scaffold")
@@ -471,22 +614,41 @@ def _ensure_task_marker(md_source: str, checkpoint_id: str) -> str:
 
 
 def autoregister(
-    src_path: Path,
-    user_ns: Dict[str, Any],
+    src_path: Optional[Path] = None,
+    user_ns: Optional[Dict[str, Any]] = None,
     *,
+    teacher_nb: Any = None,
     lesson_name: Optional[str] = None,
     out_path: Optional[Path] = None,
     reveal_after_attempts: Optional[int] = None,
+    no_solutions: bool = False,
     force_all: bool = False,
     course_choice: Optional[Tuple[str, str]] = None,
     retention_days: Optional[int] = None,
 ) -> AutoregisterResult:
     """Generate an enriched teacher notebook from a vanilla one. See module
-    docstring for the full flow."""
-    src_path = Path(src_path)
-    if not src_path.exists():
-        raise FileNotFoundError(f"Notebook not found: {src_path}")
-    teacher_nb = nbf.read(str(src_path), as_version=4)
+    docstring for the full flow.
+
+    Pass `src_path` for the normal on-disk flow, OR `teacher_nb` (a parsed
+    `nbformat.NotebookNode`) for callers that already hold the notebook —
+    e.g. Colab where the .ipynb has no file path on the VM.
+
+    Solutions are auto-revealed by default. `reveal_after_attempts=None`
+    falls back to `DEFAULT_REVEAL_AFTER_ATTEMPTS` (currently 3). Pass
+    `no_solutions=True` to suppress every solution payload notebook-wide,
+    or drop a `# cadence:no-solution` marker in any cell to suppress for
+    that one checkpoint."""
+    if user_ns is None:
+        user_ns = {}
+    if teacher_nb is None:
+        if src_path is None:
+            raise ValueError("autoregister() requires either src_path or teacher_nb")
+        src_path = Path(src_path)
+        if not src_path.exists():
+            raise FileNotFoundError(f"Notebook not found: {src_path}")
+        teacher_nb = nbf.read(str(src_path), as_version=4)
+    elif src_path is not None:
+        src_path = Path(src_path)
 
     # Pick a mode.
     candidates = _scan_manual(teacher_nb.cells)
@@ -528,23 +690,68 @@ def autoregister(
             # otherwise use the auto-inferred comparator.
             cand.comparator = cand.comparator_override or inferred_comparator
             cand.expected = expected
+            # Capture the teacher's reference code as the solution payload.
+            # Strips the starter block (that's the student stub) and any
+            # `# cadence:*` marker lines, so what we send to `--solution-code`
+            # reads like a clean reference answer.
+            cand.solution_code = _extract_solution_code(
+                teacher_nb.cells[cand.code_cell_index].source
+            ) or None
         except ValueError as e:
             cand.error = str(e)
 
-    # Lesson name: explicit > notebook stem.
+    # Lesson name: explicit > notebook stem (when we have one) > generic fallback.
     if not lesson_name:
-        lesson_name = src_path.stem.replace("_", " ").replace("-", " ").strip().title() or "Cadence Lesson"
+        if src_path is not None:
+            lesson_name = src_path.stem.replace("_", " ").replace("-", " ").strip().title() or "Cadence Lesson"
+        else:
+            # Path-less source (Colab / upload): try the notebook's own metadata
+            # title, then fall back to a generic name. Teachers can rename the
+            # output file freely; lesson_name is only used as a display label.
+            meta_title = (teacher_nb.metadata or {}).get("title") if hasattr(teacher_nb, "metadata") else None
+            lesson_name = (meta_title or "Cadence Lesson").strip() or "Cadence Lesson"
 
     # Build the output notebook.
     out_nb = nbf.v4.new_notebook()
-    if "kernelspec" in teacher_nb.metadata:
-        out_nb.metadata["kernelspec"] = teacher_nb.metadata["kernelspec"]
+    # Force a portable Python 3 kernelspec rather than copying the teacher's
+    # local kernel name. Teachers often author in named conda/pyenv kernels
+    # (`icmltrend`, `myresearch-py311`, etc.) — copying that name into the
+    # registered notebook means anyone who opens the file in Colab/Kaggle
+    # gets "Unrecognised runtime 'X'; defaulting to 'python3'". `python3`
+    # works everywhere; teachers can still rename it after download if they
+    # want to.
+    out_nb.metadata["kernelspec"] = {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    }
     if "language_info" in teacher_nb.metadata:
         out_nb.metadata["language_info"] = teacher_nb.metadata["language_info"]
 
-    # Minimal setup cell at the top — registrations now live INLINE with
-    # each exercise, not in a single YAML block.
+    # Carry `%pip install` / `!pip install` lines from the source notebook
+    # to the top of the registered output. Teachers on Colab/Kaggle install
+    # cadence-edu (and friends) in their authoring notebook; the downloaded
+    # registered file opens in a fresh kernel where those packages aren't
+    # there yet — without this propagation, `%load_ext cadence` ModuleNotFound's.
+    pip_lines = _extract_pip_install_lines(teacher_nb.cells)
+    n_structural = 1  # the setup cell
+    if pip_lines:
+        out_nb.cells.append(nbf.v4.new_code_cell(source="\n".join(pip_lines)))
+        n_structural += 1  # +1 for the pip cell now sitting above setup
+
+    # Minimal setup cell — registrations now live INLINE with each exercise,
+    # not in a single YAML block. When pip-install lines are also at the top,
+    # this sits at index 1; otherwise index 0.
     out_nb.cells.append(_build_setup_cell(lesson_name, course_choice, retention_days))
+
+    # Solutions are on by default — only an explicit `no_solutions=True`
+    # or `reveal_after_attempts == 0` turns them off globally.
+    effective_reveal = reveal_after_attempts
+    if effective_reveal == 0:
+        effective_reveal = None
+        no_solutions = True
+    elif effective_reveal is None and not no_solutions:
+        effective_reveal = DEFAULT_REVEAL_AFTER_ATTEMPTS
 
     # Map cell index → (checkpoint_id, register_line) for injection.
     md_to_id: Dict[int, str] = {}
@@ -555,7 +762,7 @@ def autoregister(
         if c.task_cell_index is not None:
             md_to_id[c.task_cell_index] = c.checkpoint_id
         code_to_register[c.code_cell_index] = _register_line_for(
-            c, reveal_after_attempts
+            c, effective_reveal, no_solutions=no_solutions,
         )
 
     for i, cell in enumerate(teacher_nb.cells):
@@ -603,14 +810,22 @@ def autoregister(
             continue
         out_nb.cells.append(cell)
 
-    # Post-process: strip stray %load_ext lines, replace %cadence_autoregister
-    # with %cadence_scaffold, and inject a scaffold cell if none ended up there.
-    out_nb.cells = _post_process_cells(out_nb.cells)
+    # Post-process: strip stray %load_ext + %pip install lines (already at the
+    # top), replace %cadence_autoregister with %cadence_scaffold, and inject a
+    # scaffold cell if none ended up there. Skip the leading `n_structural`
+    # cells (pip + setup) so we don't strip from the ones that need those lines.
+    out_nb.cells = _post_process_cells(out_nb.cells, n_structural)
 
     _changes, out_nb = nbf.validator.normalize(out_nb)
-    out_path = Path(out_path) if out_path else src_path.with_name(
-        f"{src_path.stem}_registered.ipynb"
-    )
+    if out_path is not None:
+        out_path = Path(out_path)
+    elif src_path is not None:
+        out_path = src_path.with_name(f"{src_path.stem}_registered.ipynb")
+    else:
+        # Path-less source: default to CWD with a fixed name. On Colab CWD
+        # is /content; on Kaggle /kaggle/working — both reachable from the
+        # platform's file browser, plus the magic prints a FileLink.
+        out_path = Path.cwd() / "cadence_registered.ipynb"
     nbf.write(out_nb, str(out_path))
 
     # Skipped-silently candidates are not "successes" or "failures" — they

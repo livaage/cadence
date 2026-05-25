@@ -6,6 +6,247 @@ release is actually cut + uploaded to PyPI.
 
 ## Unreleased
 
+## 0.2.12 — 2026-05-26
+
+### Fixed
+- **No more `Unrecognised runtime 'X'; defaulting to 'python3'`** on
+  Colab / Kaggle when the teacher authored locally with a named conda
+  / pyenv kernel. Autoregister and scaffold now force a portable
+  `python3` kernelspec on the generated registered + student notebooks
+  instead of copying the teacher's local kernel name. Teachers can
+  still rename the kernel after download if they need a specific
+  environment.
+- **Grey body text in the student "Before you join" privacy notice and
+  several other non-cream cards** (light-blue info cards, pink error
+  cards, white empty-state cards) — my 0.2.10 cream/mint sweep didn't
+  catch these. All `<div style="…background:…">` wrappers without an
+  explicit text colour now declare `color: #1f2937` so child text
+  doesn't inherit Jupyter's default grey.
+
+### Changed
+- **Demo notebook intro spells out the three-notebook flow** —
+  `teacher.ipynb` (what you author) → `teacher_registered.ipynb`
+  (canonical "what's registered" snapshot you can commit to git) →
+  `teacher_registered_student.ipynb` (the deliverable students get).
+  Each file has a single, clear lifetime — re-running autoregister
+  regenerates the latter two without ambiguity.
+
+## 0.2.11 — 2026-05-26
+
+### Fixed
+- **Pip-install line no longer duplicates in the registered notebook.**
+  0.2.7 added pip-install propagation (prepending the teacher's
+  `%pip install ...` lines as a fresh cell at the top of the
+  registered notebook), but didn't strip those same lines from the
+  teacher's original cells when they were copied through — so the
+  registered notebook ended up with the pip install twice.
+- **`%load_ext cadence` no longer disappears from the registered
+  notebook when pip-install propagation is active.** Same root cause:
+  `_post_process_cells` was treating `cells[0]` as the structural
+  setup cell (leave-alone), but with a pip cell prepended the setup
+  cell sits at `cells[1]` — so `%load_ext cadence` got stripped from
+  the setup cell, and the registered notebook couldn't load the
+  extension on Run All. Now `_post_process_cells` takes an
+  `n_structural` arg and leaves the leading pip + setup cells alone,
+  while stripping stray `%load_ext cadence` and `%pip install` lines
+  from everything downstream.
+
+## 0.2.10 — 2026-05-26
+
+### Added
+- **`# cadence:given` / `# cadence:end` block marker.** Code inside the
+  block runs normally in the teacher kernel (no input-transformer
+  comment-out, unlike `cadence:starter`) AND gets copied verbatim into
+  the student notebook above the starter stub. Closes the gap where
+  setup data the student needs (loaded arrays, RNG draws, problem
+  inputs) was either trapped inside the teacher's reference solution
+  (so never reached students) or stuck inside a `cadence:starter` block
+  (so couldn't execute in the teacher's kernel for autoregister to
+  read the answer from). The student exercise cell now layers cleanly:
+  `Given:` block → `Your code here` (or the `starter` stub) →
+  `check("id", ...)`.
+
+### Changed
+- **Muted-text contrast bump on every cream / mint / off-white card.**
+  Slate-600 (`#475569`) → slate-700 (`#334155`) for every "muted" caption
+  (lesson card footers, "Other commands:", autoregister/scaffold result
+  detail rows, etc.). Also added explicit `color: #1f2937` to every
+  card whose outer wrapper was previously inheriting text colour from
+  Jupyter's default — on some themes that fallback was a grey close to
+  the cream background, which the user reported as hard to read.
+
+## 0.2.9 — 2026-05-26
+
+### Fixed
+- **`%cadence_register` no longer chokes on apostrophes / regex literals /
+  embedded quotes in `--solution-code`.** 0.2.8 JSON-encoded the value
+  and POSIX-shell-quoted it, which works in isolated `shlex.split` but
+  breaks somewhere in the .ipynb-storage → IPython-input-pipeline →
+  `magic_arguments` chain on real notebooks. Common failure case: a
+  teacher's reference solution containing `re.match('e', 'the quick
+  brown fox')` or a line like `# teacher's reference` produced a
+  `UsageError: unrecognized arguments` when the registered notebook
+  ran. Switched to **base64 with a `b64:` prefix** — the payload is
+  pure `[A-Za-z0-9+/=]` so no parser at any layer of the chain can
+  mis-interpret it. The `cadence_register` magic detects the prefix
+  and decodes; hand-written single-line `--solution-code` without the
+  prefix continues to pass through unchanged, and 0.2.8's JSON-encoded
+  form is still soft-decoded for back-compat.
+
+## 0.2.8 — 2026-05-26
+
+### Changed
+- **Solutions are now auto-revealed by default.** Previously
+  `%cadence_autoregister` left solutions off unless the teacher
+  explicitly answered `yes` at the prompt. Now the default flips:
+  the teacher's reference code in each exercise cell becomes the
+  `--solution-code` payload, and students unlock it after the global
+  default of 3 wrong attempts. The interactive prompt now reads
+  "Auto-reveal solutions after N wrong attempts? [empty=default 3,
+  0=disable, n=disable]".
+- **`--solution-code` values are JSON-encoded** when emitted by
+  autoregister so multi-line teacher solutions survive the
+  single-line IPython magic constraint. `%cadence_register` soft-
+  decodes JSON-encoded values (parses as JSON string → uses decoded;
+  otherwise uses raw). Hand-written single-line `--solution-code`
+  continues to work unchanged.
+
+### Added
+- **`--no-solutions` CLI flag** on `%cadence_autoregister` — global
+  opt-out, suppresses every solution payload notebook-wide. Equivalent
+  to `--reveal-after 0` or answering `0`/`n` at the prompt.
+- **`# cadence:no-solution`** per-cell marker. Drop it into any
+  exercise cell and that one checkpoint gets no solution payload
+  even when global reveals are on. For the questions where the
+  answer is short enough that revealing it gives the whole exercise
+  away.
+- **`# cadence:reveal-after N`** per-cell marker. Overrides the
+  global reveal-after-attempts value for one checkpoint. Use for
+  a harder exercise that should wait longer before unlocking.
+- **`# cadence:hint-after N`** per-cell marker. Same idea, for the
+  hint-unlock threshold (default 1).
+- **Solution-code extraction strips the starter block.** When a cell
+  has `# cadence:starter` / `# cadence:end`, the code captured as
+  `--solution-code` is the teacher's reference *below* `# cadence:end`,
+  with the student stub removed. Students see the worked answer when
+  they unlock, not their own placeholders.
+
+## 0.2.7 — 2026-05-25
+
+### Added
+- **Pip-install propagation.** `%pip install` / `!pip install` lines in
+  the teacher's source notebook are now scanned out and prepended as
+  the first code cell of both the generated registered notebook and the
+  student notebook. Without this, a teacher on Colab/Kaggle who runs
+  `%pip install cadence-edu` in their authoring notebook would download
+  a registered/student notebook that hits `%load_ext cadence` →
+  `ModuleNotFoundError` on its first run (the downloaded file lands in
+  a fresh kernel with no cadence-edu). Lines are deduped in first-seen
+  order; only `%pip install` and `!pip install` are carried — conda
+  invocations are skipped for now.
+
+### Changed
+- Bumped muted-caption colour from slate-500 (`#64748b`) to slate-600
+  (`#475569`) across every magic-output card. On the cream / mint card
+  backgrounds we use for success and warning cards (`#f0fdf4`,
+  `#fffbeb`, `#fafafa`), slate-500 sat at ~4.5:1 contrast — borderline
+  WCAG AA, hard to read on lower-end laptop screens. Slate-600 sits at
+  ~6:1 on the same backgrounds.
+
+## 0.2.6 — 2026-05-25
+
+### Fixed
+- **Upload-widget fallback now preserves the original magic args.**
+  Previously: `%cadence_autoregister --all --force` on Kaggle fell to
+  the widget, and re-running after upload dropped the flags — auto
+  mode never engaged, only manually-marked checkpoints registered.
+  Now the widget's upload callback immediately re-invokes the magic
+  with the user's original `line` (via `shell.run_line_magic`), so
+  `--all` / `--force` / `--reveal-after N` carry through verbatim.
+- **Kaggle: dropped the dead path-based detection.** The file at
+  `/kaggle/working/.virtual_documents/__notebook_source__.ipynb` looked
+  promising but is actually JupyterLab's flat Python-source extraction
+  (the LSP virtual document) — no JSON, no markdown cells, unusable
+  for autoregister. Kaggle now goes straight to the upload widget,
+  which is the correct UX (Kaggle doesn't expose the running notebook
+  to the kernel filesystem at all).
+
+### Added
+- **`FileLink` download handle after `%cadence_autoregister` and
+  `%cadence_scaffold`** — clickable across every Jupyter platform.
+  Closes the "no easy way to open the generated file" gap on Colab
+  and Kaggle, where the file sidebar doesn't double-click-open
+  arbitrary `.ipynb` files as new notebooks.
+- **Colab: also calls `google.colab.files.download(out_path)`** to
+  trigger a real browser save, on top of the FileLink. The teacher
+  gets the file in their Downloads folder without extra clicks.
+- **Kaggle-tailored upload-widget copy.** When `KAGGLE_KERNEL_RUN_TYPE`
+  is set the widget now explicitly walks the teacher through
+  `File → Download Notebook (.ipynb)` and notes that the same magic
+  will resume automatically after the upload.
+
+## 0.2.5 — 2026-05-25
+
+### Fixed
+- Colab `_message.blocking_request("get_ipynb")` returns cell sources as
+  JSON list-of-lines (the on-disk form) — `nbformat.from_dict` left
+  those as lists, which broke every downstream regex in autoregister
+  and scaffold (e.g. `CHECKPOINT_MARKER_RE.search(cell.source)` raised
+  `TypeError: expected string or bytes-like object, got 'list'`). Now
+  the Colab loader round-trips the dict through `json.dumps` and
+  `nbformat.reads(..., as_version=4)` so source-line joining runs
+  exactly as it does for an on-disk `.ipynb`, then explicitly calls
+  `nbformat.validator.normalize` to inject cell ids (Colab payloads
+  routinely arrive without them — nbformat 5+ logs a
+  `MissingIDFieldWarning` and may eventually error).
+
+## 0.2.4 — 2026-05-25
+
+(Skipped — same Colab fix as 0.2.5, but without the explicit
+`nbformat.validator.normalize` pass; superseded before any wider use.)
+
+## 0.2.3 — 2026-05-25
+
+### Added
+- **`cadence:starter` blocks now accept arbitrary free text.** Previously
+  the lines between `# cadence:starter` and `# cadence:end` had to be
+  valid Python — otherwise the teacher's own `Run All` SyntaxErrored
+  before they could even reach `%cadence_autoregister`. The extension
+  now registers an IPython input transformer that comments out the
+  starter region at execution time, so the kernel never tries to parse
+  prose or pseudocode inside it. The on-disk `.ipynb` cell source is
+  unchanged, so scaffold still extracts the original starter text into
+  the student stub.
+- **Auto-detection on Google Colab and Kaggle.** `%cadence_autoregister`
+  and `%cadence_scaffold` now find the running notebook on:
+  - **Google Colab** — via the frontend bridge
+    (`google.colab._message.blocking_request("get_ipynb")`); returns the
+    live notebook JSON, no file path needed.
+  - **Kaggle** (interactive editing) — via the JupyterLab RTC virtual
+    document at `/kaggle/working/.virtual_documents/__notebook_source__.ipynb`,
+    gated on the `KAGGLE_KERNEL_RUN_TYPE=Interactive` env var.
+  Existing platforms (Jupyter classic, Lab, VSCode, PyCharm, DataSpell)
+  continue to be detected by the same `__vsc_ipynb_file__` / env-var /
+  `/api/sessions` chain as before.
+- **Universal upload-widget fallback.** When detection fails on every
+  layer, the magics now render an `ipywidgets.FileUpload` accepting
+  `.ipynb` files. The teacher drops their notebook on the widget and
+  re-runs the magic; the in-memory notebook flows through scaffold /
+  autoregister, writing output to the kernel's CWD with a `FileLink`.
+  Works identically on any platform that supports ipywidgets — no
+  per-platform fallback strings to maintain.
+
+### Changed
+- `scaffold()` and `autoregister()` now accept a pre-parsed
+  `nbformat.NotebookNode` via a new `teacher_nb` keyword argument in
+  addition to (or instead of) `src_path`. Required for the Colab and
+  upload-widget paths, which have no on-disk source. Default output
+  filenames fall back to `cadence_registered.ipynb` /
+  `cadence_student.ipynb` in CWD when no source path is available.
+- New `detect_notebook_source()` returns a `NotebookSource` dataclass
+  (`notebook`, optional `path`, `platform` label). The older
+  `detect_current_notebook()` remains as a back-compat path-only shim.
+
 ## 0.2.2 — 2026-05-24
 
 ### Fixed

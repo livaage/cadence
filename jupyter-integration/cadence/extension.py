@@ -119,6 +119,69 @@ def _push_student_helpers(ipython) -> None:
         ns.setdefault(name, fn)
 
 
+import re as _re
+
+_STARTER_OPEN_RE = _re.compile(r"^([ \t]*)#\s*cadence:starter\s*$")
+_STARTER_CLOSE_RE = _re.compile(r"^([ \t]*)#\s*cadence:end\s*$")
+
+
+def _starter_block_transformer(lines: list) -> list:
+    """IPython input transformer that comments out lines inside a
+    `# cadence:starter` / `# cadence:end` block before the cell runs.
+
+    The teacher's reference solution lives outside the block and runs as
+    normal; the block's contents — which exist only to scaffold the student
+    notebook — get a `# ` prefix so the kernel never tries to parse them as
+    Python. This lets teachers write free-form prose, pseudocode, or
+    intentionally-broken stubs inside the block without their own
+    `Run All` SyntaxErroring.
+
+    The on-disk .ipynb cell source is unaffected — scaffold reads from the
+    file and still sees the original starter text to copy into the student
+    stub.
+
+    Operates on the IPython 7+ line list (each entry already ends in `\\n`).
+    """
+    out: list = []
+    inside = False
+    for line in lines:
+        stripped_line = line.rstrip("\n")
+        if not inside:
+            if _STARTER_OPEN_RE.match(stripped_line):
+                inside = True
+                out.append(line)
+                continue
+            out.append(line)
+        else:
+            if _STARTER_CLOSE_RE.match(stripped_line):
+                inside = False
+                out.append(line)
+                continue
+            # Inside a starter block: prefix `# ` (preserve original
+            # indentation so the cell still parses cleanly if the closer
+            # is somehow missing — we degrade to a bunch of comments).
+            indent_len = len(line) - len(line.lstrip(" \t"))
+            indent = line[:indent_len]
+            body = line[indent_len:]
+            out.append(f"{indent}# {body}" if body.strip() else line)
+    return out
+
+
+def _register_input_transformers(ipython) -> None:
+    """Install Cadence's IPython input transformers. Currently just the
+    starter-block comment-out pass; future transformers (e.g. for
+    `cadence:hide` if we ever want it stripped at runtime too) would
+    hook in here as well.
+
+    Idempotent: if the transformer is already in the list (because the
+    extension was reloaded), don't double-register."""
+    transformers = getattr(ipython, "input_transformers_cleanup", None)
+    if transformers is None:
+        return
+    if _starter_block_transformer not in transformers:
+        transformers.append(_starter_block_transformer)
+
+
 class CadenceExtension:
     """Thin handle kept for symmetry with the package __all__."""
 
@@ -128,6 +191,7 @@ class CadenceExtension:
         ipython.register_magics(self.magics)
         _register_completers(ipython)
         _push_student_helpers(ipython)
+        _register_input_transformers(ipython)
 
 
 def load_ipython_extension(ipython):

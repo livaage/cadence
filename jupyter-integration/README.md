@@ -12,48 +12,69 @@ pip install cadence-edu
 
 ## Quickstart (5 minutes)
 
-The fastest path: let the CLI mint both notebooks for you, then edit in place.
-
-```bash
-pip install cadence-edu
-
-cadence-cli new teacher --name "Fibonacci warm-up"   # writes ./teacher-setup.ipynb
-cadence-cli new student --name "Fibonacci warm-up"   # writes ./student.ipynb
-```
-
-Each starter has the right magics pre-wired — `%load_ext cadence`,
-`%cadence_create_lesson` / `%cadence_session`, a YAML registration block, an
-example `check(...)` — so you can `jupyter notebook` straight into editing
-real content.
-
-If you'd rather copy a cell by hand:
-
-**Teacher notebook** (run once per lesson, keep it private):
+You already have (or are writing) a Jupyter teaching notebook with worked
+solutions. The fastest path to a live class is **two magics**:
 
 ```python
+# Cell 1 (first cell of your authoring notebook):
 %load_ext cadence
-%cadence_create_lesson "Fibonacci warm-up"
-# → prints a join code (e.g. soup-river-42) and the dashboard URL
 
-%cadence_register fib-10 --comparator numeric --expected '{"value": 55}'
-%cadence_register greet  --comparator exact   --expected '"hello"'
+# ... your normal teaching content: markdown headings, code cells with
+# the reference solutions you'd already write to teach the lesson ...
 
-%cadence_self_test            # verifies your expected answers parse correctly
-%cadence_show_join            # big-text join code for the projector
+# Cell N (last cell, once you've Run All from the top):
+%cadence_autoregister
 ```
 
-**Student notebook** (distributed to the class — reusable every term):
+`%cadence_autoregister` walks the notebook, finds your exercises (heading +
+solution-cell pairs, or cells you explicitly tagged with `# cadence:`
+markers), reads each answer value from the live kernel, infers the
+comparator from its type, and writes a registered copy of your notebook.
+Then you Run-All that registered copy and it builds the student notebook
+for you.
 
-```python
-%load_ext cadence
-%cadence_session soup-river-42 "Alice Smith"
+### Three notebooks, one source of truth
 
-from cadence import check
-check("greet", "hello")
-check("fib-10", fib(10))
+You end up with three files on disk, each playing a different role:
+
+```
+(1) teacher.ipynb              ← what you author. Plain teaching notebook
+        │                        + a handful of `# cadence:` comments to
+        │                        label exercises (or none at all if your
+        │                        notebook already has clear heading +
+        │                        code-cell structure).
+        │  %cadence_autoregister  (run once you're happy with (1))
+        ▼
+(2) teacher_registered.ipynb   ← auto-generated. Same content as (1), but
+        │                        with `%cadence_register` magics wired
+        │                        into each exercise. Running it registers
+        │                        the lesson on the dashboard and produces
+        │                        (3). Safe to commit to git — this is
+        │                        your canonical "what's registered" record.
+        │  %cadence_scaffold      (already at the bottom of (2))
+        ▼
+(3) teacher_registered_student.ipynb   ← what you share with students.
+                                  Exercises stubbed, your reference
+                                  solution removed, `%cadence_session`
+                                  + the package install pre-filled.
 ```
 
-The teacher's dashboard updates live as students submit. That's the whole product.
+**Why three and not one?** The split lets each file have a single, clear
+lifetime:
+
+- (1) is the file you keep editing as the lesson evolves.
+- (2) is the snapshot that backs the live lesson on the dashboard. Re-run
+  it to re-register after edits.
+- (3) is the deliverable. You only ever hand this one to students.
+
+You only ever author file (1). The other two are derived from it — every
+`%cadence_autoregister` regenerates them cleanly.
+
+> **First cell of every Cadence-aware notebook should be `%load_ext cadence`**.
+> Magics, tab-completion, the `# cadence:starter` input transformer that
+> lets you write free-form prose inside starter stubs, and the bare-name
+> `check` / `show_hint` / etc. all register at extension-load time. Cells
+> that run before `%load_ext cadence` skip everything.
 
 > **Discovering commands as you go**: type `%cadence_<Tab>` for autocompletion,
 > `%cadence_register?` for argparse-style help on any magic, or
@@ -105,9 +126,12 @@ bottom run:
 %cadence_autoregister
 ```
 
-It walks you through three prompts:
+It walks you through four prompts:
 
-1. **Reveal solutions to students after N attempts?** Empty → no reveals.
+1. **Auto-reveal solutions after N wrong attempts?** Empty → default of 3.
+   Type `0` (or pass `--no-solutions`) to disable reveals notebook-wide.
+   When reveals are on, the teacher's reference code in each exercise cell
+   becomes the worked solution students see when they unlock.
 2. **Sign in to track this lesson under your account?** (Only asked if
    you aren't already signed in.) Required for courses, optional otherwise.
 3. **Add this lesson to a course?** Only asked if you're signed in. Empty
@@ -218,14 +242,25 @@ magics (`%cadence_*`) are what *do* something. The set you can reach for:
 | `# cadence:checkpoint <id> [<comparator>]` | Top of a code cell | Marks this cell as exercise `<id>`. Optional second word overrides the inferred comparator (e.g. `manual`, `exact`). |
 | `<!-- cadence:task [<id>] -->` | Markdown cell | Marks the markdown as task prose. If an id is given, the next code cell becomes the exercise stub for that id (and `# cadence:checkpoint` isn't needed). |
 | `# cadence:hint: <text>` | Inside an exercise cell | Becomes the hint for that checkpoint. Markdown allowed — backticks, code fences, `**bold**`. |
-| `# cadence:starter` … `# cadence:end` | Inside an exercise code cell | The region between becomes the student stub body (instead of `# Your code here`). Good for multi-step problems. Anything outside the markers is treated as the teacher's reference and stripped. |
-| `# cadence:solution` | Top of a code cell | Copy this code cell verbatim into the student notebook. Use for shared setup, an explainer snippet, or a worked solution you want students to see. |
+| `# cadence:starter` … `# cadence:end` | Inside an exercise code cell | The region between becomes the student stub body (instead of `# Your code here`). The kernel comments this region out at execution time, so it can contain prose / pseudocode / unfilled placeholders that wouldn't otherwise parse as Python. Anything outside the markers is treated as the teacher's reference and stripped from the student notebook. |
+| `# cadence:given` … `# cadence:end` | Inside an exercise code cell | Setup code (loaded data, seeded RNG draws, problem inputs) that the student also needs to see. **Runs in the teacher kernel** (no comment-out) and **is copied verbatim into the student notebook** above the starter stub. Use when the teacher's reference solution needs variables that students should start with too. |
+| `# cadence:no-solution` | Inside an exercise code cell | Suppress the auto-revealed worked solution for this one checkpoint, even when reveals are globally on. For exercises where the answer is short enough that revealing it gives the whole question away. |
+| `# cadence:reveal-after N` | Inside an exercise code cell | Per-checkpoint override of the global `--reveal-after-attempts` value. Use for a harder exercise you want students to wrestle with longer. |
+| `# cadence:hint-after N` | Inside an exercise code cell | Same idea, for the hint-unlock threshold (default 1). |
+| `# cadence:solution` | Top of a code cell | Copy this whole code cell verbatim into the student notebook. Use for shared setup, an explainer snippet, or a worked solution you want students to see. **Mutually exclusive with `# cadence:checkpoint`** — `solution` means "show this to students," `checkpoint` means "stub it out." Don't mix them in the same cell. |
 | `# cadence:hide` … `# cadence:end` | Inside a code cell | The region between is stripped from **both** the registered teacher notebook and the student notebook — purely teacher-side authoring notes. |
 | `<!-- cadence:hide -->` … `<!-- cadence:end -->` | Inside a markdown cell | Same — strips a private aside from inside an otherwise-public markdown cell (e.g. "this trips up students because…" inside an exercise description). |
+
+> **Solutions are revealed by default.** As of 0.2.8, every auto-checked
+> checkpoint registers with the teacher's reference code as the worked
+> solution, unlocked after 3 wrong attempts. Pass `--no-solutions` to
+> `%cadence_autoregister` to suppress reveals notebook-wide, or drop
+> `# cadence:no-solution` in any cell to suppress just that one.
 
 The "ad hoc content for students" cases all fall out of this toolkit:
 
 - **Extra code only the student sees** → put it in its own cell, top-tag it `# cadence:solution`.
+- **Setup data students need + teacher kernel also needs** → wrap in `cadence:given` / `cadence:end`.
 - **Extra prose only the student sees** → markdown cell with `<!-- cadence:task -->` (no id needed) or just a heading.
 - **Stuff only the *teacher* sees** → wrap in `cadence:hide` (in either code or markdown).
 - **Starter code inside an exercise stub** → wrap your scaffolded structure in `cadence:starter` / `cadence:end`.

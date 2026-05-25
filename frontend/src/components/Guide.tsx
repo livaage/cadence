@@ -167,6 +167,12 @@ const Guide: React.FC = () => {
               answer values exist in the kernel.
             </Inline>
             <Inline>
+              <strong>Your first cell should be <code>%load_ext cadence</code></strong>. That
+              registers the magics, the tab-completion, and the input transformer that lets you
+              write free-form prose inside <code># cadence:starter</code> blocks. Cells that run
+              before <code>%load_ext cadence</code> skip everything.
+            </Inline>
+            <Inline>
               When you're ready to wire it for tracking, add (or just acknowledge) two things:
             </Inline>
             <Box sx={{ pl: 0, py: 0.5 }}>
@@ -208,11 +214,26 @@ const Guide: React.FC = () => {
                 <FieldRow name="starter" required={false}>
                   Wrap a region with <code># cadence:starter</code> / <code># cadence:end</code> and
                   that region replaces the default <code># Your code here</code> placeholder in
-                  the student stub. Good for multi-step problems.
+                  the student stub. The kernel comments out the starter region at execution
+                  time, so it can contain prose, pseudocode, or <code>...</code> placeholders
+                  that wouldn't otherwise parse as Python.
+                </FieldRow>
+                <FieldRow name="given" required={false}>
+                  <code># cadence:given</code> / <code># cadence:end</code> wraps setup code that
+                  both <strong>runs in your kernel</strong> AND is copied verbatim into the
+                  student notebook above the starter stub. Use when the teacher reference needs
+                  variables that students should start with too (loaded arrays, RNG draws, etc.).
                 </FieldRow>
                 <FieldRow name="solution" required={false}>
                   <code># cadence:solution</code> at the top of a code cell copies the whole cell
                   verbatim into the student notebook (for helper functions, worked examples, etc.).
+                  Mutually exclusive with <code># cadence:checkpoint</code> in the same cell.
+                </FieldRow>
+                <FieldRow name="no-solution / reveal-after / hint-after" required={false}>
+                  Per-checkpoint overrides for the solution-reveal flow:{' '}
+                  <code># cadence:no-solution</code> suppresses the auto-revealed solution for
+                  just this cell; <code># cadence:reveal-after N</code> and{' '}
+                  <code># cadence:hint-after N</code> override the global attempt thresholds.
                 </FieldRow>
                 <FieldRow name="hide" required={false}>
                   <code># cadence:hide</code> / <code># cadence:end</code> delimits a region that's
@@ -233,27 +254,40 @@ const Guide: React.FC = () => {
             <CodeBlock>{`%load_ext cadence
 %cadence_autoregister`}</CodeBlock>
             <Inline>
-              It walks through four prompts (reveal solutions after N attempts? sign in? attach
-              to a course? retention days?), then writes{' '}
+              It walks through four prompts (auto-reveal solutions after N attempts? sign in?
+              attach to a course? retention days?), then writes{' '}
               <code>&lt;your-notebook&gt;_registered.ipynb</code> next to the source. That second
               file is the one you'll keep around — it has each <code>%cadence_register …</code>{' '}
               line injected at the top of its exercise cell so you can scan id / comparator /
-              expected at a glance.
+              expected at a glance.{' '}
+              <strong>Solutions are revealed by default</strong> (after 3 wrong attempts) using
+              your reference code; pass <code>--no-solutions</code> or answer <code>0</code> at
+              the prompt to disable.
             </Inline>
 
-            <Box sx={{ mt: 2, p: 2, borderRadius: 1.5, bgcolor: '#f8fafc', borderLeft: '4px solid #2563eb' }}>
+            <Box sx={{ mt: 2, p: 2, borderRadius: 1.5, bgcolor: '#f8fafc', borderLeft: '4px solid #2563eb', color: '#1f2937' }}>
               <Typography variant="body2" sx={{ fontWeight: 600, color: '#1e3a8a', mb: 1 }}>
-                Three notebooks, two transformations
+                Three notebooks, two transformations — and why three not one
               </Typography>
-              <Typography variant="caption" component="pre" sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.78rem', color: '#334155', whiteSpace: 'pre', overflowX: 'auto', display: 'block', m: 0 }}>{`(1) teacher.ipynb               ← what you write
-        │
+              <Typography variant="caption" component="pre" sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: '0.78rem', color: '#334155', whiteSpace: 'pre', overflowX: 'auto', display: 'block', m: 0 }}>{`(1) teacher.ipynb               ← what you author, edit, re-edit. Plain
+        │                         teaching notebook + a few # cadence:
+        │                         comments.
         │  %cadence_autoregister
         ▼
-(2) teacher_registered.ipynb    ← auto-generated: same notebook + registration magic
-        │
+(2) teacher_registered.ipynb    ← auto-generated. Canonical "what's
+        │                         registered" snapshot — running it
+        │                         re-registers the lesson on the
+        │                         dashboard. Commit to git alongside (1).
         │  %cadence_scaffold  (already wired in at the bottom)
         ▼
-(3) teacher_registered_student.ipynb   ← what you share with students`}</Typography>
+(3) teacher_registered_student.ipynb   ← the deliverable. You only ever
+                                  hand this one to students.`}</Typography>
+              <Typography variant="caption" component="div" sx={{ color: '#334155', mt: 1.5, lineHeight: 1.5 }}>
+                <strong>Each file has a single, clear lifetime.</strong> (1) is the file you keep
+                editing as the lesson evolves. (2) is the snapshot that backs the live lesson —
+                re-run it to re-register after edits. (3) is the file you distribute. Re-running
+                autoregister regenerates (2) and (3) cleanly.
+              </Typography>
             </Box>
           </Step>
 
@@ -285,20 +319,26 @@ const Guide: React.FC = () => {
             </Inline>
             <Grid container spacing={2} sx={{ mt: 0 }}>
               <Grid item xs={12} md={6}>
-                <FeatureCard title="Hints (opt-in)" subtitle="--hint … --hint-after-attempts N">
+                <FeatureCard title="Hints (opt-in)" subtitle="# cadence:hint: ... or --hint">
                   <Inline>
-                    After <code>N</code> wrong attempts (default <code>1</code>), the student's
-                    failure cell shows a <em>"💡 Need a hint?"</em> prompt. They opt in by running{' '}
+                    Drop <code># cadence:hint: try np.histogram</code> on a line inside your
+                    exercise cell. After <code>N</code> wrong attempts (default <code>1</code>,
+                    override per-cell with <code># cadence:hint-after N</code>), the student's
+                    failure cell shows a <em>"💡 Need a hint?"</em> prompt; they opt in by running{' '}
                     <code>show_hint("id")</code>.
                   </Inline>
                 </FeatureCard>
               </Grid>
               <Grid item xs={12} md={6}>
-                <FeatureCard title="Solutions (opt-in)" subtitle="--reveal-after N --solution-value … --solution-code …">
+                <FeatureCard title="Solutions (default on)" subtitle="auto: your reference code; opt-out: # cadence:no-solution or --no-solutions">
                   <Inline>
-                    After <code>N</code> attempts the student can run{' '}
-                    <code>show_solution("id")</code> to see the canonical value, a fully
-                    worked code snippet, or both. Every reveal is logged on the dashboard.
+                    Autoregister captures the teacher reference code in each exercise cell as the
+                    worked solution. After 3 wrong attempts (override with{' '}
+                    <code># cadence:reveal-after N</code> per cell, or{' '}
+                    <code>--reveal-after N</code> globally) students can run{' '}
+                    <code>show_solution("id")</code>. Suppress per-cell with{' '}
+                    <code># cadence:no-solution</code>, or notebook-wide with{' '}
+                    <code>--no-solutions</code>.
                   </Inline>
                 </FeatureCard>
               </Grid>

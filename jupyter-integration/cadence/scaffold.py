@@ -15,7 +15,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import nbformat as nbf
 
@@ -57,6 +57,14 @@ CHECKPOINT_MARKER_RE = re.compile(
 # students a scaffolded starting point for multi-step problems.
 _STARTER_START_RE = re.compile(r"^[ \t]*#\s*cadence:starter\s*$", re.MULTILINE)
 _STARTER_END_RE = re.compile(r"^[ \t]*#\s*cadence:end\s*$", re.MULTILINE)
+# `# cadence:given` / `# cadence:end` marks code that runs in the teacher
+# kernel AND is carried verbatim into the student notebook above the
+# starter stub. Closes the gap where setup data the student needs
+# (loaded arrays, seeded RNG draws, etc.) can't live in `cadence:starter`
+# (which the input transformer comments out so prose-style stubs work)
+# but also shouldn't be dropped on the way to the student.
+_GIVEN_START_RE = re.compile(r"^[ \t]*#\s*cadence:given\s*$", re.MULTILINE)
+_GIVEN_END_RE = _STARTER_END_RE  # same closer; markers all share `cadence:end`
 # Hide-block markers: regions between these are stripped from BOTH the
 # student notebook (via scaffold) and the registered teacher notebook (via
 # autoregister) — they're for the teacher's own authoring notes. Code uses
@@ -99,54 +107,73 @@ _LESSON_MAGIC_RE = re.compile(
 )
 
 
-def detect_current_notebook() -> Optional[Path]:
-    """Best-effort detection of the currently-running notebook's .ipynb path.
+@dataclass
+class NotebookSource:
+    """A located teacher notebook + how we located it.
 
-    Returns None if we can't figure it out — the caller should then ask the
-    user to pass the path explicitly. Tries three sources in order:
+    `notebook` is always populated (already parsed). `path` is the on-disk
+    file if there is one; None on platforms where the notebook lives only
+    in the frontend (Colab) or where the caller uploaded bytes directly.
 
-    1. `__vsc_ipynb_file__` in the IPython user namespace. VSCode's Jupyter
-       extension sets this to the absolute notebook path; nothing else does.
-    2. `JPY_SESSION_NAME` env var. jupyter_server >= 2 sets this to the
-       session's relative path inside the server root. We resolve it against
-       cwd, then sniff for an `.ipynb` suffix.
-    3. Local jupyter_server's `/api/sessions` keyed by the running kernel's
-       connection file. Works in classic Notebook + JupyterLab when there's
-       a reachable server; fails silently otherwise (no exceptions leak).
+    Callers should write output files relative to `path` when available;
+    when None they should default to the kernel's CWD with a sensible
+    fixed name and surface a download link.
     """
-    # 1. VSCode
+
+    notebook: Any  # nbformat.NotebookNode — typed as Any to keep nbformat import-light
+    path: Optional[Path]
+    platform: str  # one of: vscode, jpy_session_name, jupyter_server, colab, kaggle, upload
+
+
+# Module-level cache populated by the upload-widget fallback. When the user
+# drops an .ipynb on the FileUpload widget, its callback stashes the parsed
+# notebook here; the next call to detect_notebook_source() picks it up and
+# consumes it (single-shot — re-runs after a fresh detection attempt).
+_uploaded_notebook_cache: List["NotebookSource"] = []
+
+
+def _try_vscode() -> Optional[NotebookSource]:
     try:
         from IPython import get_ipython
         ip = get_ipython()
-        if ip is not None:
-            vsc = ip.user_ns.get("__vsc_ipynb_file__")
-            if isinstance(vsc, str) and vsc.endswith(".ipynb"):
-                p = Path(vsc)
-                if p.exists():
-                    return p
+        if ip is None:
+            return None
+        vsc = ip.user_ns.get("__vsc_ipynb_file__")
+        if not isinstance(vsc, str) or not vsc.endswith(".ipynb"):
+            return None
+        p = Path(vsc)
+        if not p.exists():
+            return None
+        return NotebookSource(nbf.read(str(p), as_version=4), p, "vscode")
     except Exception:
-        pass
+        return None
 
-    # 2. JPY_SESSION_NAME (jupyter_server 2.x+)
+
+def _try_jpy_session_name() -> Optional[NotebookSource]:
     session_name = os.environ.get("JPY_SESSION_NAME", "")
-    if session_name.endswith(".ipynb"):
-        p = Path(session_name)
-        if not p.is_absolute():
-            p = Path.cwd() / p
-        if p.exists():
-            return p
-
-    # 3. Local jupyter_server /api/sessions probe via the kernel's connection file
+    if not session_name.endswith(".ipynb"):
+        return None
+    p = Path(session_name)
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    if not p.exists():
+        return None
     try:
-        import json
-        import ipykernel
-        import requests as _requests  # local import — keep top-level deps thin
+        return NotebookSource(nbf.read(str(p), as_version=4), p, "jpy_session_name")
+    except Exception:
+        return None
 
+
+def _try_jupyter_server_api() -> Optional[NotebookSource]:
+    try:
+        import ipykernel
+        import requests as _requests
+    except Exception:
+        return None
+    try:
         conn_file = ipykernel.get_connection_file()
         kernel_id = Path(conn_file).stem.removeprefix("kernel-")
-
-        # Try modern jupyter_server first, then legacy notebook.notebookapp.
-        servers = []
+        servers: List[dict] = []
         try:
             from jupyter_server.serverapp import list_running_servers
             servers = list(list_running_servers())
@@ -156,7 +183,6 @@ def detect_current_notebook() -> Optional[Path]:
                 servers = list(_legacy())
             except Exception:
                 servers = []
-
         for srv in servers:
             try:
                 url = srv["url"].rstrip("/") + "/api/sessions"
@@ -174,12 +200,168 @@ def detect_current_notebook() -> Optional[Path]:
                     root = srv.get("root_dir") or srv.get("notebook_dir") or "."
                     p = Path(root) / nb_path
                     if p.exists():
-                        return p
+                        return NotebookSource(
+                            nbf.read(str(p), as_version=4), p, "jupyter_server"
+                        )
             except Exception:
                 continue
     except Exception:
-        pass
+        return None
+    return None
 
+
+def _try_colab() -> Optional[NotebookSource]:
+    """Pull the live notebook JSON from Colab's frontend via the undocumented
+    `_message.blocking_request("get_ipynb")` API. Returns a path-less source
+    — Colab notebooks live in Drive, not on the VM filesystem."""
+    try:
+        from google.colab import _message
+    except ImportError:
+        return None
+    try:
+        resp = _message.blocking_request("get_ipynb", request="", timeout_sec=8)
+    except Exception:
+        return None
+    if not isinstance(resp, dict):
+        return None
+    ipynb = resp.get("ipynb")
+    if ipynb is None:
+        return None
+    try:
+        # _message hands back a dict-shaped notebook where cell sources are
+        # the on-disk JSON list-of-lines form. nbf.from_dict alone leaves
+        # those as lists — downstream code (autoregister, scaffold) expects
+        # joined strings. Round-trip through JSON so nbformat's reader
+        # normalizes everything (sources, cell ids, kernelspec) exactly as
+        # it would for a real .ipynb on disk.
+        import json as _json
+        text = _json.dumps(ipynb) if isinstance(ipynb, dict) else (
+            ipynb if isinstance(ipynb, str) else ipynb.decode("utf-8")
+        )
+        nb = nbf.reads(text, as_version=4)
+        # Colab notebooks routinely arrive without per-cell id fields; recent
+        # nbformat versions warn ("MissingIDFieldWarning") and may eventually
+        # error. Run the normalizer to inject ids before downstream code
+        # touches the cells.
+        try:
+            _changes, nb = nbf.validator.normalize(nb)
+        except Exception:
+            pass
+        return NotebookSource(nb, None, "colab")
+    except Exception:
+        return None
+
+
+def _try_kaggle() -> Optional[NotebookSource]:
+    """No-op: Kaggle's `/kaggle/working/.virtual_documents/__notebook_source__.ipynb`
+    looks like an .ipynb by name but is actually JupyterLab's flat Python-source
+    extraction (the LSP "virtual document"). It contains the kernel's view of
+    cell code only — no JSON structure, no markdown cells — so autoregister
+    can't use it (markdown is how it finds exercise headings).
+
+    Kept as a stub so future Kaggle changes can be re-enabled here without
+    touching call sites. For now `is_kaggle()` triggers a Kaggle-tailored
+    upload-widget message instead."""
+    return None
+
+
+# Pip install lines we want to propagate from the teacher notebook into
+# the generated registered + student notebooks. Matches both magic and
+# shell forms, with optional leading whitespace inside a cell. Conda
+# isn't included — most teaching environments use pip, and conda calls
+# inside Colab/Kaggle frequently misbehave anyway.
+_PIP_INSTALL_LINE_RE = re.compile(
+    r"^[ \t]*[%!]pip\s+install\s+.+?\s*$", re.MULTILINE
+)
+
+
+def _extract_pip_install_lines(cells) -> List[str]:
+    """Return `%pip install` / `!pip install` lines from the teacher's
+    notebook, deduped, in first-seen order.
+
+    Carrying these into the generated registered + student notebooks fixes
+    the Colab/Kaggle gap where the teacher installed cadence-edu in their
+    source notebook but the *downloaded* registered/student notebook lands
+    in a fresh kernel where the package isn't there yet.
+    """
+    seen: List[str] = []
+    seen_set: set = set()
+    for cell in cells:
+        if getattr(cell, "cell_type", None) != "code":
+            continue
+        for m in _PIP_INSTALL_LINE_RE.finditer(getattr(cell, "source", "") or ""):
+            line = m.group(0).strip()
+            if line in seen_set:
+                continue
+            seen_set.add(line)
+            seen.append(line)
+    return seen
+
+
+def is_kaggle() -> bool:
+    """Heuristic platform sniff for the upload-widget's tailored copy."""
+    return os.environ.get("KAGGLE_KERNEL_RUN_TYPE") == "Interactive"
+
+
+def is_colab() -> bool:
+    try:
+        import google.colab  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def detect_notebook_source() -> Optional[NotebookSource]:
+    """Layered, best-effort detection of the running teacher notebook. Tries:
+
+    1. VSCode (`__vsc_ipynb_file__`)
+    2. `JPY_SESSION_NAME` env var (jupyter_server 2.x)
+    3. Local jupyter_server `/api/sessions` (Classic, Lab, PyCharm, DataSpell)
+    4. Google Colab — frontend bridge returns notebook JSON, no on-disk path
+    5. Kaggle — JupyterLab RTC virtual-document path
+    6. A pending widget upload cached by `_consume_uploaded()` (re-run path)
+
+    Returns the first hit, or None. None means the caller should render the
+    upload-widget fallback and ask the teacher for the .ipynb directly."""
+    # Cached upload takes priority — if the user just dropped a file on the
+    # widget and re-ran the magic, that's the canonical "they told us where
+    # to look" signal.
+    if _uploaded_notebook_cache:
+        return _uploaded_notebook_cache.pop()
+    for finder in (_try_vscode, _try_jpy_session_name, _try_jupyter_server_api,
+                   _try_colab, _try_kaggle):
+        src = finder()
+        if src is not None:
+            return src
+    return None
+
+
+def stash_uploaded_notebook(content: bytes) -> NotebookSource:
+    """Park an uploaded .ipynb bytestream so the next detect_notebook_source()
+    call returns it. Used by the FileUpload widget callback in magic.py."""
+    nb = nbf.reads(content.decode("utf-8") if isinstance(content, (bytes, bytearray))
+                   else content, as_version=4)
+    src = NotebookSource(nb, None, "upload")
+    _uploaded_notebook_cache.append(src)
+    return src
+
+
+def detect_current_notebook() -> Optional[Path]:
+    """Back-compat shim: returns the on-disk path if we located a file-backed
+    notebook, else None. Callers that can work with in-memory notebooks should
+    use `detect_notebook_source()` directly to also cover Colab / upload.
+
+    Deliberately skips the Colab and upload-cache branches — those produce
+    path-less sources, and we don't want this shim to silently consume a
+    pending widget upload when callers can't use it anyway."""
+    for finder in (_try_vscode, _try_jpy_session_name,
+                   _try_jupyter_server_api, _try_kaggle):
+        try:
+            src = finder()
+        except Exception:
+            continue
+        if src is not None and src.path is not None:
+            return src.path
     return None
 
 
@@ -275,24 +457,49 @@ def _extract_starter_block(source: str) -> Optional[str]:
     return source[start.end():end.start()].strip("\n")
 
 
-def _stub_for_ids(ids: List[str], teacher_source: Optional[str] = None) -> str:
-    """Build the body of a student exercise cell: a placeholder + one check
-    call per id. Uses Ellipsis (`...`) as the answer so the cell is at least
-    syntactically valid and check() reports "wrong answer" rather than
-    NameError.
+def _extract_given_block(source: str) -> Optional[str]:
+    """Return the text between `# cadence:given` and `# cadence:end` in
+    the teacher cell, stripped of surrounding blank lines. None if no
+    given markers are present, or no valid pair."""
+    start = _GIVEN_START_RE.search(source)
+    if not start:
+        return None
+    end = _GIVEN_END_RE.search(source, pos=start.end())
+    if not end:
+        return None
+    return source[start.end():end.start()].strip("\n")
 
-    If `teacher_source` contains a `# cadence:starter` / `# cadence:end`
-    block, that block becomes the placeholder body — giving students a
-    scaffolded starting point instead of a blank `# Your code here`."""
+
+def _stub_for_ids(ids: List[str], teacher_source: Optional[str] = None) -> str:
+    """Build the body of a student exercise cell.
+
+    Layered, in order:
+      1. **Given block** (optional, from `# cadence:given` / `# cadence:end`):
+         setup code/data the teacher wants the student to have verbatim.
+         Runs in the teacher kernel too — that's why it's separate from
+         `cadence:starter`, which the input transformer comments out.
+      2. **Starter stub** (optional, from `# cadence:starter` / `# cadence:end`):
+         scaffolded placeholder code for the student to fill in. Falls back
+         to a `# Your code here` line if no starter block is provided.
+      3. **`check(...)` call** for every id, with `...` (Ellipsis) as the
+         placeholder so the cell is at least syntactically valid before the
+         student fills it in.
+    """
+    sections: List[str] = []
+    if teacher_source is not None:
+        given = _extract_given_block(teacher_source)
+        if given:
+            sections.append("# Given (carried over from the teacher):\n" + given)
+
     body = "# Your code here"
     if teacher_source is not None:
         starter = _extract_starter_block(teacher_source)
         if starter:
             body = starter
-    lines = [body, ""]
-    for cid in ids:
-        lines.append(f'check("{cid}", ...)')
-    return "\n".join(lines)
+    sections.append(body)
+    check_calls = "\n".join(f'check("{cid}", ...)' for cid in ids)
+    sections.append(check_calls)
+    return "\n\n".join(sections)
 
 
 # Rendered as raw HTML inside a markdown cell. We pick a soft left-accent
@@ -333,8 +540,23 @@ def _build_student_notebook(
     name_placeholder: str,
 ) -> Tuple[object, int, int, int, List[str]]:
     student = nbf.v4.new_notebook()
-    if "kernelspec" in teacher_nb.metadata:
-        student.metadata["kernelspec"] = teacher_nb.metadata["kernelspec"]
+    # Use a portable Python 3 kernelspec instead of copying the teacher's
+    # local kernel name — students opening this on Colab/Kaggle/binder shouldn't
+    # see "Unrecognised runtime" warnings about the teacher's local env.
+    student.metadata["kernelspec"] = {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    }
+
+    # Carry `%pip install` / `!pip install` lines from the teacher source over
+    # to the student notebook. Without this, a student opening the downloaded
+    # notebook on Colab/Kaggle hits `%load_ext cadence` → ModuleNotFoundError
+    # because their fresh kernel doesn't have cadence-edu yet. Goes BEFORE the
+    # student intro so the install runs before any other cell.
+    pip_lines = _extract_pip_install_lines(teacher_nb.cells)
+    if pip_lines:
+        student.cells.append(nbf.v4.new_code_cell(source="\n".join(pip_lines)))
 
     # Intro: one-paragraph crib sheet for the student-side API. Renders before
     # the session cell so students see how submission works before they join.
@@ -438,34 +660,46 @@ def _build_student_notebook(
 
 
 def scaffold(
-    src_path: Path,
+    src_path: Optional[Path] = None,
     out_path: Optional[Path] = None,
     join_code: Optional[str] = None,
     name_placeholder: str = "your name",
+    *,
+    teacher_nb: Any = None,
 ) -> ScaffoldResult:
     """Generate a student notebook from a teacher's notebook.
 
     Args:
-        src_path: Path to the teacher's notebook.
+        src_path: Path to the teacher's notebook on disk. Pass either this OR
+            `teacher_nb` (the latter is for callers that already hold the
+            parsed notebook — e.g. Colab where the .ipynb has no file path).
         out_path: Where to write the student notebook. Defaults to
-            `<src_stem>_student.ipynb` next to the source.
+            `<src_stem>_student.ipynb` next to the source when a path was
+            given; otherwise `cadence_student.ipynb` in the kernel's CWD.
         join_code: Override the join code. By default we read the lesson name
             from the teacher's `%cadence_(create_)lesson "Name"` magic and look
             up its join code in `~/.cadence/lessons.yaml`.
         name_placeholder: Text put in the `%cadence_session <code> "..."` slot.
+        teacher_nb: Pre-parsed `nbformat.NotebookNode`. When supplied, skips
+            reading from disk — required for path-less sources (Colab, upload).
 
     Returns:
         A ScaffoldResult with the output path and counts.
 
     Raises:
-        FileNotFoundError: source notebook missing.
-        ValueError: no join code could be determined.
+        FileNotFoundError: src_path was given but the file is missing.
+        ValueError: neither src_path nor teacher_nb was supplied; or no join
+            code could be determined.
     """
-    src_path = Path(src_path)
-    if not src_path.exists():
-        raise FileNotFoundError(f"Notebook not found: {src_path}")
-
-    teacher_nb = nbf.read(str(src_path), as_version=4)
+    if teacher_nb is None:
+        if src_path is None:
+            raise ValueError("scaffold() requires either src_path or teacher_nb")
+        src_path = Path(src_path)
+        if not src_path.exists():
+            raise FileNotFoundError(f"Notebook not found: {src_path}")
+        teacher_nb = nbf.read(str(src_path), as_version=4)
+    elif src_path is not None:
+        src_path = Path(src_path)
 
     lesson_name = _extract_lesson_name(teacher_nb.cells)
     resolved_join_code = join_code
@@ -489,9 +723,14 @@ def scaffold(
         teacher_nb, resolved_join_code, name_placeholder
     )
 
-    out_path = Path(out_path) if out_path else src_path.with_name(
-        f"{src_path.stem}_student.ipynb"
-    )
+    if out_path is not None:
+        out_path = Path(out_path)
+    elif src_path is not None:
+        out_path = src_path.with_name(f"{src_path.stem}_student.ipynb")
+    else:
+        # Path-less source (Colab / upload). Fall back to CWD with a fixed
+        # name; the magic surfaces a FileLink so the teacher can download.
+        out_path = Path.cwd() / "cadence_student.ipynb"
     nbf.write(student, str(out_path))
 
     return ScaffoldResult(
