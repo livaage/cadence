@@ -44,9 +44,14 @@ from .scaffold import (
     strip_hide_blocks,
 )
 
-# A `# cadence:hint: ...` line in a cell becomes that checkpoint's hint.
+# A `# cadence:hint <text>` (or back-compat `# cadence:hint: <text>`) line
+# in a cell becomes that checkpoint's hint. The optional trailing colon
+# matches the original syntax shipped in 0.1.12; the no-colon form is
+# the preferred new shape — consistent with every other `# cadence:NAME
+# <args>` marker. Regex stays unambiguous against `# cadence:hint-after N`
+# because `:?` doesn't match the `-` and `\s+` requires whitespace after.
 HINT_MARKER_RE = re.compile(
-    r"^[ \t]*#\s*cadence:hint:\s*(?P<text>.+?)\s*$", re.MULTILINE
+    r"^[ \t]*#\s*cadence:hint:?\s+(?P<text>.+?)\s*$", re.MULTILINE
 )
 # Per-cell opt-out of the default solution reveal. When present, this
 # specific checkpoint gets no `--solution-code` / `--solution-value` /
@@ -91,6 +96,11 @@ DEFAULT_FLOAT_TOLERANCE = 0.001
 # `--reveal-after N`, this is the number of wrong attempts students need
 # before the worked solution unlocks.
 DEFAULT_REVEAL_AFTER_ATTEMPTS = 3
+# Default number of wrong attempts before the hint button appears. Set
+# to 2 so students always get one try on their own before a nudge — 1
+# was too eager (button flashes up on the very first wrong attempt,
+# before the student has had a chance to reread).
+DEFAULT_HINT_AFTER_ATTEMPTS = 2
 
 
 @dataclass
@@ -134,6 +144,10 @@ class AutoregisterResult:
     n_failed: int
     checkpoints: List[_Candidate] = field(default_factory=list)
     mode: str = "manual"  # "manual" | "auto"
+    # Non-fatal advisories surfaced in the autoregister success card. Lists
+    # things like "hint unlocks at the same time as the solution" — registered
+    # successfully but probably not what the teacher intended.
+    warnings: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -484,9 +498,16 @@ def _register_line_for(
         parts.append(f"--expected {_shell_quote_single(json.dumps(c.expected))}")
     if c.hint:
         parts.append(f"--hint {_shell_quote_single(c.hint)}")
-    # Per-cell hint-after override (independent of solution reveal logic).
-    if c.hint_after_local is not None:
-        parts.append(f"--hint-after-attempts {c.hint_after_local}")
+    # Hint-after threshold: per-cell override wins; otherwise emit the
+    # global default so the registered notebook is self-contained (won't
+    # silently flip when the package default changes).
+    effective_hint_after = (
+        c.hint_after_local
+        if c.hint_after_local is not None
+        else DEFAULT_HINT_AFTER_ATTEMPTS
+    )
+    if c.hint:  # only emit the flag when there's actually a hint to gate
+        parts.append(f"--hint-after-attempts {effective_hint_after}")
     # Resolve effective reveal-after: per-cell wins over global, with the
     # no-solution opt-outs short-circuiting to "off".
     effective_reveal = (
@@ -756,6 +777,74 @@ def autoregister(
     # Map cell index → (checkpoint_id, register_line) for injection.
     md_to_id: Dict[int, str] = {}
     code_to_register: Dict[int, str] = {}
+    warnings_list: List[str] = []
+
+    # Marker validation: catch two common authoring mistakes that otherwise
+    # silently fail (the bad line is treated as a plain comment and the
+    # surrounding region just disappears).
+    #   1. Wrong prefix: `#candece:given` (typo) — keyword is right, prefix
+    #      isn't `cadence`.
+    #   2. Unknown keyword: `# cadence:rebeal-after` (typo on the keyword
+    #      side) — prefix is right, keyword isn't in our set.
+    _KNOWN_MARKERS = {
+        "checkpoint", "task", "hint", "hint-after", "reveal-after",
+        "no-solution", "starter", "given", "solution", "hide", "end",
+    }
+    # Match `#PREFIX<SEP>KEYWORD` where SEP is `:` (correct), `_` (a
+    # typo — confusion with the magic naming style `%cadence_register`),
+    # or `-` (also a typo). We then post-filter:
+    #   * `cadence:foo` → check `foo` is a known keyword
+    #   * `cadence_foo` / `cadence-foo` → flag the separator if `foo` is
+    #     a known keyword
+    #   * `candece:foo` (etc) → flag the prefix if `foo` is a known keyword
+    _COMMENT_MARKER_RE = re.compile(
+        r"^[ \t]*#\s*([A-Za-z][A-Za-z0-9]*)([:_-])([A-Za-z][A-Za-z0-9_-]*)",
+        re.MULTILINE,
+    )
+    seen_warnings: set = set()
+    for cell in teacher_nb.cells:
+        if getattr(cell, "cell_type", None) != "code":
+            continue
+        src = getattr(cell, "source", "") or ""
+        for m in _COMMENT_MARKER_RE.finditer(src):
+            prefix, sep, keyword = m.group(1).lower(), m.group(2), m.group(3).lower()
+            line = m.group(0).strip()
+            if prefix == "cadence" and sep == ":":
+                # Right prefix + right separator — just check the keyword.
+                if keyword not in _KNOWN_MARKERS:
+                    msg = (
+                        f"unknown marker `{line}` — not one of "
+                        f"{', '.join(sorted(_KNOWN_MARKERS))}. Treated as a "
+                        f"plain comment, so it has no effect."
+                    )
+                    if msg not in seen_warnings:
+                        seen_warnings.add(msg)
+                        warnings_list.append(msg)
+            elif prefix == "cadence" and keyword in _KNOWN_MARKERS:
+                # Right prefix + known keyword but wrong separator (`_` or
+                # `-` instead of `:`). Easy to confuse with the magic naming
+                # style `%cadence_register`.
+                msg = (
+                    f"line `{line}` uses `{sep}` between `cadence` and "
+                    f"`{keyword}` — markers use a colon, so this should be "
+                    f"`# cadence:{keyword}`. As written it's a plain comment "
+                    f"and the marker has no effect."
+                )
+                if msg not in seen_warnings:
+                    seen_warnings.add(msg)
+                    warnings_list.append(msg)
+            elif keyword in _KNOWN_MARKERS and sep == ":":
+                # Wrong prefix (typo) but right separator + known keyword.
+                msg = (
+                    f"line `{line}` looks like a typo'd `# cadence:` marker "
+                    f"— did you mean `# cadence:{keyword}`? Typos are treated "
+                    f"as plain comments, so the marker has no effect and any "
+                    f"region it was meant to delimit will be dropped."
+                )
+                if msg not in seen_warnings:
+                    seen_warnings.add(msg)
+                    warnings_list.append(msg)
+
     for c in candidates:
         if c.error is not None or c.skipped_silently:
             continue
@@ -764,6 +853,43 @@ def autoregister(
         code_to_register[c.code_cell_index] = _register_line_for(
             c, effective_reveal, no_solutions=no_solutions,
         )
+        # Hint-vs-solution advisories.
+        sol_threshold = (
+            c.reveal_after_local
+            if c.reveal_after_local is not None
+            else effective_reveal
+        )
+        sol_suppressed = no_solutions or c.no_solution_local
+        sol_active = bool(sol_threshold) and not sol_suppressed
+        if c.hint:
+            hint_threshold = (
+                c.hint_after_local
+                if c.hint_after_local is not None
+                else DEFAULT_HINT_AFTER_ATTEMPTS
+            )
+            # Ordering check: hint unlocks at the same or later attempt as
+            # the solution → hint is useless. Default is hint=2 / reveal=3
+            # so this only fires when the teacher actively raised hint-after
+            # or lowered reveal-after.
+            if sol_active and hint_threshold >= sol_threshold:
+                warnings_list.append(
+                    f"checkpoint `{c.checkpoint_id}`: hint unlocks at attempt "
+                    f"{hint_threshold} but solution unlocks at attempt {sol_threshold} — "
+                    f"the hint won't appear before the solution. Lower "
+                    f"`# cadence:hint-after N` to less than {sol_threshold} so students "
+                    f"see the hint first."
+                )
+        elif sol_active:
+            # Solution will reveal at attempt N, but no hint exists at all
+            # — student gets the answer with no intermediate help. Flag so
+            # the teacher knows to add `# cadence:hint <text>` if they want
+            # a gentler progression.
+            warnings_list.append(
+                f"checkpoint `{c.checkpoint_id}`: solution reveals at attempt "
+                f"{sol_threshold} but no hint is registered — students go straight "
+                f"from wrong → worked solution with nothing in between. Add "
+                f"`# cadence:hint <text>` in the same cell for a gentler nudge first."
+            )
 
     for i, cell in enumerate(teacher_nb.cells):
         if cell.cell_type == "markdown":
@@ -838,4 +964,5 @@ def autoregister(
         n_failed=sum(1 for c in candidates if c.error is not None),
         checkpoints=candidates,
         mode=mode,
+        warnings=warnings_list,
     )

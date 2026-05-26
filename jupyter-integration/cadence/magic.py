@@ -2171,6 +2171,16 @@ class CadenceMagic(Magics):
                 f'<ul style="margin: 4px 0 0 0; padding-left: 20px;">{fail_rows}</ul>'
                 f'</div>'
             )
+        warn_html = ""
+        if getattr(result, "warnings", None):
+            warn_rows = "".join(f"<li>{w}</li>" for w in result.warnings)
+            warn_html = (
+                f'<div style="margin-top: 8px; padding: 8px 10px; background: #fffbeb;'
+                f' border-left: 3px solid #b45309; font-size: 0.85em; color: #1f2937;">'
+                f'<strong>⚠ {len(result.warnings)} advisor{"y" if len(result.warnings) == 1 else "ies"}:</strong>'
+                f'<ul style="margin: 4px 0 0 0; padding-left: 20px;">{warn_rows}</ul>'
+                f'</div>'
+            )
         reveal_html = (
             f" · solutions reveal after {reveal_after} attempts" if reveal_after else ""
         )
@@ -2194,6 +2204,7 @@ class CadenceMagic(Magics):
                     <tbody>{ok_rows}</tbody>
                 </table>
                 {fail_html}
+                {warn_html}
                 <div style="margin-top: 10px; font-size: 0.85em; color: #334155;">
                     Next: open <code>{result.out_path.name}</code>, run the setup cell at the
                     top to register the lesson, then run <code>%cadence_scaffold</code> from
@@ -2330,8 +2341,8 @@ class CadenceMagic(Magics):
     @argument('--allow-submissions', action='store_true',
               help='Let students submit code via %%cadence_submit for the teacher to review.')
     @argument('--hint', default=None)
-    @argument('--hint-after-attempts', type=int, default=1,
-              help='Number of attempts after which students can request the hint (default 1).')
+    @argument('--hint-after-attempts', type=int, default=2,
+              help='Number of attempts after which students can request the hint (default 2).')
     @argument('--order', type=int, default=0)
     @argument('--reveal-after', type=int, default=None,
               help='Number of attempts after which students can request the solution.')
@@ -2378,7 +2389,7 @@ class CadenceMagic(Magics):
                 'of <code>--solution-value</code> or <code>--solution-code</code> set.</div>'
             ))
 
-        hint_after = max(1, int(args.hint_after_attempts or 1))
+        hint_after = max(1, int(args.hint_after_attempts or 2))
 
         # Decode the `--solution-code` value. Autoregister emits `b64:<base64>`
         # so multi-line teacher solutions (with apostrophes, regex literals,
@@ -2547,7 +2558,7 @@ class CadenceMagic(Magics):
                     continue
                 expected_payload = expected if isinstance(expected, dict) else {"value": expected}
 
-            hint_after = entry.get('hint_after', entry.get('hint_after_attempts', 1))
+            hint_after = entry.get('hint_after', entry.get('hint_after_attempts', 2))
             try:
                 hint_after = max(1, int(hint_after))
             except (TypeError, ValueError):
@@ -3026,11 +3037,19 @@ def _help_table() -> list:
             {"cmd": '%cadence_delete_course "<name>" [--yes]',
              "what": "Permanently delete a course (lessons are detached, not deleted).", "role": "teacher"},
         ]),
-        ("Teacher: checkpoints", [
-            {"cmd": "%cadence_register <id> --comparator X --expected '<json>' [--hint ...] [--allow-submissions]",
-             "what": "Register a single checkpoint. Flag-driven, fits on one line.", "role": "teacher"},
+        ("Teacher: workflow (recommended)", [
+            {"cmd": "%cadence_autoregister [<src.ipynb>] [--all] [--reveal-after N] [--no-solutions] [--force]",
+             "what": "Walk a vanilla teaching notebook, find exercises via `# cadence:` markers (or heading + code pairing in auto mode), and generate `<src>_registered.ipynb` with `%cadence_register` lines wired in. The headline magic — use this instead of writing `%cadence_register` by hand.",
+             "role": "teacher"},
+            {"cmd": "%cadence_scaffold [<src.ipynb>] [--out FILE] [--join-code CODE] [--force]",
+             "what": "Generate the student notebook from a registered teacher notebook. Stubs exercises, strips your reference solution, copies markdown + `cadence:given` setup, pre-fills `%cadence_session`. Already added at the bottom of the autoregister output.",
+             "role": "teacher"},
+        ]),
+        ("Teacher: checkpoints (direct — alternative to autoregister)", [
+            {"cmd": "%cadence_register <id> --comparator X --expected '<json>' [--hint ...] [--reveal-after N] [--solution-code ...] [--allow-submissions]",
+             "what": "Register a single checkpoint by hand. Use when autoregister doesn't fit (e.g. dynamic ids, custom comparators).", "role": "teacher"},
             {"cmd": "%%cadence_register_yaml",
-             "what": "Bulk-register from an inline YAML body — same fields, block layout.", "role": "teacher"},
+             "what": "Bulk-register from an inline YAML body — same fields, block layout. Multi-line solution_code is easier here.", "role": "teacher"},
             {"cmd": "%cadence_register_yaml_file path/to/file.yaml",
              "what": "Bulk-register from a YAML file on disk (easy to version-control).", "role": "teacher"},
             {"cmd": "%cadence_self_test",
@@ -3065,6 +3084,31 @@ def _help_table() -> list:
              "what": "Wipe everything Cadence holds about this session. Irreversible.", "role": "student"},
             {"cmd": "%cadence_accept_terms",
              "what": "Record acceptance of the privacy notice + terms (for adults).", "role": "student"},
+        ]),
+        # The marker toolkit. These are *comments* (inert at runtime — the
+        # magics are what do the work). Listed here so `%cadence_help` is a
+        # complete reference for the authoring surface, not just the magics.
+        ("Markers (declarative — read by %cadence_autoregister / %cadence_scaffold)", [
+            {"cmd": "# cadence:checkpoint <id> [<comparator>]",
+             "what": "Mark a code cell as an exercise with id `<id>`. Optional comparator override (`exact`, `numeric`, `set`, `regex`, `manual`).", "role": "teacher"},
+            {"cmd": "<!-- cadence:task [<id>] -->",
+             "what": "Mark a markdown cell as a task description. With an id, the next code cell is automatically that exercise (no `# cadence:checkpoint` needed).", "role": "teacher"},
+            {"cmd": "# cadence:hint <text>",
+             "what": "Hint for the checkpoint in this cell. Markdown allowed in the text (backticks, `**bold**`, code fences). The older `# cadence:hint: <text>` form with a trailing colon also works.", "role": "teacher"},
+            {"cmd": "# cadence:hint-after N",
+             "what": "Override how many wrong attempts unlock the hint (default 2).", "role": "teacher"},
+            {"cmd": "# cadence:reveal-after N",
+             "what": "Override how many wrong attempts unlock the worked solution (default 3, or whatever you passed to --reveal-after).", "role": "teacher"},
+            {"cmd": "# cadence:no-solution",
+             "what": "Suppress the auto-revealed solution for this one checkpoint, even when reveals are globally on.", "role": "teacher"},
+            {"cmd": "# cadence:starter / # cadence:end",
+             "what": "Wrap a region that becomes the student stub body. Kernel comments it out at exec time — can contain prose / `...` placeholders.", "role": "teacher"},
+            {"cmd": "# cadence:given / # cadence:end",
+             "what": "Wrap setup code (loaded arrays, RNG draws) that BOTH runs in your kernel AND is copied verbatim into the student notebook above the stub.", "role": "teacher"},
+            {"cmd": "# cadence:solution",
+             "what": "Copy this whole code cell verbatim to students. Mutually exclusive with `# cadence:checkpoint` in the same cell.", "role": "teacher"},
+            {"cmd": "# cadence:hide / # cadence:end  (or <!-- cadence:hide --> / <!-- cadence:end -->)",
+             "what": "Strip this region from BOTH the registered teacher notebook and the student notebook — teacher-private authoring notes.", "role": "teacher"},
         ]),
     ]
 

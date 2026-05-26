@@ -644,6 +644,17 @@ def _build_student_notebook(
             all_ids.append(cid)
             pending_checkpoint_id = None
             continue
+        # Standalone `cadence:given` block — no checkpoint marker, no pending
+        # task id. Copy just the given region into the student notebook so the
+        # setup data the teacher prepared (e.g. loaded arrays, sample inputs)
+        # flows through without requiring a checkpoint to anchor it. Anything
+        # outside the cadence:given region in this cell is teacher-only and
+        # stays stripped.
+        given_only = _extract_given_block(source)
+        if given_only and not _extract_check_ids(source):
+            student.cells.append(nbf.v4.new_code_cell(source=given_only))
+            n_solutions += 1
+            continue
         # Back-compat: cells with check() calls but no other marker still
         # turn into stubs preserving those exact ids. Older teacher notebooks
         # (and the one-cell-with-multiple-checks pattern) keep working.

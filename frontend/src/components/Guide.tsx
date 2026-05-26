@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Box, Typography, Card, CardContent, Tabs, Tab, Stack, Divider, Chip, Grid, Table, TableBody, TableCell, TableHead, TableRow } from '@mui/material';
+import { Box, Typography, Card, CardContent, Tabs, Tab, Stack, Divider, Chip, Grid, Table, TableBody, TableCell, TableHead, TableRow, Accordion, AccordionSummary, AccordionDetails } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { Link as RouterLink } from 'react-router-dom';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -208,8 +209,10 @@ const Guide: React.FC = () => {
                   for a free-text reflection, <code>exact</code> to force ordered list match).
                 </FieldRow>
                 <FieldRow name="hint" required={false}>
-                  <code># cadence:hint: &lt;text&gt;</code> inside the exercise cell becomes the
-                  hint students can request with <code>show_hint("id")</code>. Markdown allowed.
+                  <code># cadence:hint &lt;text&gt;</code> inside the exercise cell becomes the
+                  hint students can request with <code>show_hint("id")</code>. Markdown
+                  allowed. (The older <code># cadence:hint: &lt;text&gt;</code> form with a
+                  trailing colon still works for back-compat.)
                 </FieldRow>
                 <FieldRow name="starter" required={false}>
                   Wrap a region with <code># cadence:starter</code> / <code># cadence:end</code> and
@@ -319,13 +322,14 @@ const Guide: React.FC = () => {
             </Inline>
             <Grid container spacing={2} sx={{ mt: 0 }}>
               <Grid item xs={12} md={6}>
-                <FeatureCard title="Hints (opt-in)" subtitle="# cadence:hint: ... or --hint">
+                <FeatureCard title="Hints (opt-in)" subtitle="# cadence:hint ... or --hint">
                   <Inline>
-                    Drop <code># cadence:hint: try np.histogram</code> on a line inside your
-                    exercise cell. After <code>N</code> wrong attempts (default <code>1</code>,
-                    override per-cell with <code># cadence:hint-after N</code>), the student's
-                    failure cell shows a <em>"💡 Need a hint?"</em> prompt; they opt in by running{' '}
-                    <code>show_hint("id")</code>.
+                    Drop <code># cadence:hint try np.histogram</code> on a line inside your
+                    exercise cell. After <code>N</code> wrong attempts (default <code>2</code> —
+                    one try on their own first, override per-cell with{' '}
+                    <code># cadence:hint-after N</code>), the student's failure cell shows a{' '}
+                    💡 <strong>Show hint</strong> button that, when clicked, renders the hint
+                    inline.
                   </Inline>
                 </FeatureCard>
               </Grid>
@@ -480,61 +484,120 @@ const Guide: React.FC = () => {
             </CardContent>
           </Card>
 
-          <SectionLabel>Alternative registration paths</SectionLabel>
-          <Card sx={{ mb: 3 }}>
-            <CardContent sx={{ p: 3 }}>
+          <SectionLabel>Pick your authoring method</SectionLabel>
+          <Inline>
+            Three ways to tell Cadence what your exercises are. They <strong>coexist</strong> —
+            you can mix them in the same notebook. The five comparator types
+            (<code>exact</code>, <code>numeric</code>, <code>set</code>, <code>regex</code>,{' '}
+            <code>manual</code>) are the same across all three.
+          </Inline>
+
+          <Accordion defaultExpanded sx={{ mb: 1 }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography sx={{ fontWeight: 600 }}>
+                1. <code style={{ fontFamily: 'inherit' }}>#</code> markers + <code style={{ fontFamily: 'inherit' }}>%cadence_autoregister</code>
+                <Chip label="Recommended" size="small" color="primary" sx={{ ml: 1.5, height: 20 }} />
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails>
               <Inline>
-                <code>%cadence_autoregister</code> is the recommended path, but the original
-                registration mechanisms still work — pick whichever fits your workflow:
+                You write a vanilla teaching notebook — markdown for explanations, code cells
+                for reference solutions. Either let auto-mode pair headings with code cells, or
+                drop a `# cadence:checkpoint &lt;id&gt;` comment on the cells you want to be
+                exercises. Autoregister reads the answer values from your live kernel, infers
+                comparators, and generates the registered notebook for you.
               </Inline>
-              <Box sx={{ mt: 2 }}>
-                <Inline>
-                  <strong>YAML block in a cell</strong> — type expected values explicitly
-                  instead of having them inferred from kernel state. Good when there's no
-                  obvious "answer variable" to extract.
-                </Inline>
-                <Box sx={{ mt: 1 }}>
-                  <CodeBlock lang="yaml">{`%%cadence_register_yaml
+              <Box sx={{ mt: 1 }}>
+                <CodeBlock>{`# In your teacher notebook:
+# cadence:checkpoint setup.mean-value
+# cadence:hint try \`arr.mean()\`
+arr = np.arange(100)
+mean_value = arr.mean()
+
+# (...rest of your lesson...)
+
+# Last cell — run once and you're done:
+%cadence_autoregister`}</CodeBlock>
+              </Box>
+              <Inline>
+                Why most teachers should use this: your authoring notebook stays clean and
+                pythonic; expected values are derived from your own code, not hand-typed;
+                solutions auto-reveal using your reference. See "Optional per-cell markers"
+                in Step 2 for the full marker toolkit.
+              </Inline>
+            </AccordionDetails>
+          </Accordion>
+
+          <Accordion sx={{ mb: 1 }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography sx={{ fontWeight: 600 }}>
+                2. <code style={{ fontFamily: 'inherit' }}>%cadence_register</code> per checkpoint
+                <Chip label="Direct" size="small" sx={{ ml: 1.5, height: 20 }} />
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Inline>
+                One magic line per checkpoint. Useful for surgical edits, one-off demos, or
+                when you want explicit control over every parameter without going through
+                autoregister.
+              </Inline>
+              <Box sx={{ mt: 1 }}>
+                <CodeBlock>{`%load_ext cadence
+%cadence_create_lesson "Fibonacci warm-up"
+
+%cadence_register fib-10 --comparator numeric --expected 55
+%cadence_register greet  --comparator exact   --expected '"hello"'
+%cadence_register reflect --comparator manual --hint "Briefly describe what the peak shape tells you."
+
+%cadence_self_test`}</CodeBlock>
+              </Box>
+              <Inline>
+                <strong>Multi-line solution code is awkward here</strong> because line magics
+                are single-line — pass short snippets only, or switch to the YAML form below
+                for multi-line reference code.
+              </Inline>
+            </AccordionDetails>
+          </Accordion>
+
+          <Accordion sx={{ mb: 3 }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography sx={{ fontWeight: 600 }}>
+                3. <code style={{ fontFamily: 'inherit' }}>%%cadence_register_yaml</code> block or file
+                <Chip label="Bulk" size="small" sx={{ ml: 1.5, height: 20 }} />
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <Inline>
+                Type expected values explicitly in YAML — good when there's no obvious "answer
+                variable" to extract from your kernel, or when you want to keep the rubric in
+                version control alongside your notebook. Multi-line <code>solution_code:</code>{' '}
+                values are cleanest here (YAML block scalars).
+              </Inline>
+              <Box sx={{ mt: 1 }}>
+                <CodeBlock lang="yaml">{`%%cadence_register_yaml
 - id: setup.mean-value
   comparator: numeric
   expected: {value: 49.5, tolerance: 0.001}
-  hint: average of 0..99
+  hint: "average of 0..99"
+  hint_after_attempts: 2
 - id: discovery.higgs-peak
   comparator: exact
   expected: 125
-  reveal_after: 3
+  reveal_after_attempts: 3
   solution_value: "125"
+  solution_code: |
+    counts, _ = np.histogram(m_gg, bins=np.arange(100, 151))
+    answer = int(np.arange(100, 151)[counts.argmax()])
   allow_submissions: true`}</CodeBlock>
-                </Box>
               </Box>
-              <Box sx={{ mt: 2 }}>
-                <Inline>
-                  <strong>YAML in a file</strong> — keep rubrics in version control across many
-                  notebooks.
-                </Inline>
-                <Box sx={{ mt: 1 }}>
-                  <CodeBlock>{`%cadence_register_yaml_file checkpoints/week3.yaml`}</CodeBlock>
-                </Box>
+              <Inline>
+                Same fields in a file you keep in git:
+              </Inline>
+              <Box sx={{ mt: 1 }}>
+                <CodeBlock>{`%cadence_register_yaml_file checkpoints/week3.yaml`}</CodeBlock>
               </Box>
-              <Box sx={{ mt: 2 }}>
-                <Inline>
-                  <strong>Inline per-checkpoint</strong> — surgical edits, one-off demos.
-                </Inline>
-                <Box sx={{ mt: 1 }}>
-                  <CodeBlock>{`%cadence_register array_mean --comparator numeric --expected 49.5
-%cadence_register reflection --comparator manual --hint "Briefly describe what the peak shape tells you."`}</CodeBlock>
-                </Box>
-              </Box>
-              <Box sx={{ mt: 2 }}>
-                <Inline>
-                  All four forms (auto-register, YAML block, YAML file, inline) coexist — you
-                  can mix them in the same notebook. The five comparator types (<code>exact</code>,{' '}
-                  <code>numeric</code>, <code>set</code>, <code>regex</code>, <code>manual</code>)
-                  work the same across all paths.
-                </Inline>
-              </Box>
-            </CardContent>
-          </Card>
+            </AccordionDetails>
+          </Accordion>
 
           <SectionLabel>Reading the dashboard</SectionLabel>
           <Card sx={{ mb: 3 }}>
@@ -803,7 +866,7 @@ fib(10)`}</CodeBlock>
                 </TableBody>
               </Table>
 
-              <SectionLabel>Checkpoints</SectionLabel>
+              <SectionLabel>Workflow (recommended)</SectionLabel>
               <Table size="small" sx={{ mb: 3 }}>
                 <TableHead>
                   <TableRow>
@@ -813,10 +876,49 @@ fib(10)`}</CodeBlock>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  <CommandRow cmd={`%cadence_register id --comparator X --expected '<json>'`} what="Register a single checkpoint. See the comparator table above for examples." who="teacher" />
-                  <CommandRow cmd={`%%cadence_register_yaml`} what="Bulk-register from an inline YAML body — same fields as the flag form, in block layout." who="teacher" />
+                  <CommandRow cmd={`%cadence_autoregister [src.ipynb] [--all] [--reveal-after N] [--no-solutions] [--force]`} what="Walk a vanilla teaching notebook, find exercises via `# cadence:` markers (or heading+code pairing in auto mode), and generate <src>_registered.ipynb with %cadence_register lines wired in." who="teacher" />
+                  <CommandRow cmd={`%cadence_scaffold [src.ipynb] [--out FILE] [--join-code CODE] [--force]`} what="Generate the student notebook from a registered teacher notebook. Already added at the bottom of autoregister output — rarely needed by hand." who="teacher" />
+                </TableBody>
+              </Table>
+
+              <SectionLabel>Checkpoints (direct — alternative to autoregister)</SectionLabel>
+              <Table size="small" sx={{ mb: 3 }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 600 }}>Command</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>What it does</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Who</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  <CommandRow cmd={`%cadence_register id --comparator X --expected '<json>' [--hint ...] [--reveal-after N] [--solution-code ...] [--allow-submissions]`} what="Register a single checkpoint by hand. See the comparator table above for examples." who="teacher" />
+                  <CommandRow cmd={`%%cadence_register_yaml`} what="Bulk-register from an inline YAML body — same fields as the flag form, in block layout. Multi-line solution_code is easier here." who="teacher" />
                   <CommandRow cmd={`%cadence_register_yaml_file path/to/file.yaml`} what="Bulk-register from a YAML file on disk." who="teacher" />
                   <CommandRow cmd={`%cadence_self_test`} what="Submit the teacher's expected answers to verify they parse and pass." who="teacher" />
+                </TableBody>
+              </Table>
+
+              <SectionLabel>Markers (declarative, read by autoregister + scaffold)</SectionLabel>
+              <Table size="small" sx={{ mb: 3 }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 600 }}>Marker</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>What it does</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Who</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  <CommandRow cmd={`# cadence:checkpoint <id> [<comparator>]`} what="Mark a code cell as an exercise. Optional comparator override (exact, numeric, set, regex, manual)." who="teacher" />
+                  <CommandRow cmd={`<!-- cadence:task [<id>] -->`} what="Mark a markdown cell as task prose. With an id, the next code cell auto-pairs to it." who="teacher" />
+                  <CommandRow cmd={`# cadence:hint <text>`} what="Inline hint for the checkpoint. Markdown allowed (backticks, **bold**, fenced code). The older `# cadence:hint: <text>` form also works." who="teacher" />
+                  <CommandRow cmd={`# cadence:hint-after N`} what="Per-cell override: number of wrong attempts before the hint button appears (default 2)." who="teacher" />
+                  <CommandRow cmd={`# cadence:reveal-after N`} what="Per-cell override: number of wrong attempts before the worked solution unlocks." who="teacher" />
+                  <CommandRow cmd={`# cadence:no-solution`} what="Suppress the auto-revealed solution for this one checkpoint, even when reveals are globally on." who="teacher" />
+                  <CommandRow cmd={`# cadence:starter / # cadence:end`} what="Wrap a region that becomes the student stub body. Kernel comments it out at exec time — can hold prose / ... placeholders." who="teacher" />
+                  <CommandRow cmd={`# cadence:given / # cadence:end`} what="Setup code that runs in your kernel AND is copied verbatim into the student notebook above the stub." who="teacher" />
+                  <CommandRow cmd={`# cadence:solution`} what="Copy this whole code cell verbatim to students (helper functions, worked examples). Mutually exclusive with # cadence:checkpoint." who="teacher" />
+                  <CommandRow cmd={`# cadence:hide / # cadence:end`} what="Strip this region from BOTH the registered and student notebooks. Teacher-private authoring notes." who="teacher" />
+                  <CommandRow cmd={`<!-- cadence:hide --> / <!-- cadence:end -->`} what="Same as above but for inside a markdown cell." who="teacher" />
                 </TableBody>
               </Table>
 

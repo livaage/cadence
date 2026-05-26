@@ -6,6 +6,263 @@ release is actually cut + uploaded to PyPI.
 
 ## Unreleased
 
+## 0.2.26 — 2026-05-26
+
+### Fixed
+- **Worked-solution code now actually renders with syntax highlighting.**
+  The 0.2.23 switch to `Markdown` + ```python``` fenced blocks relied on
+  the Jupyter front-end having a code highlighter wired up — some setups
+  do, some don't (and yours apparently didn't). Switched to Pygments
+  with `noclasses=True` so the highlighted HTML carries inline styles,
+  works regardless of front-end CSS, and is wrapped in a dark container
+  that overrides `.rendered_html pre` with `!important`. Falls back to a
+  plain dark `<pre>` if Pygments is unavailable.
+
+### Added
+- **Typo warning now catches `#cadence_hint`** (underscore instead of
+  colon — confusion with the magic naming style `%cadence_register`).
+  Surfaces as: *"line `#cadence_hint` uses `_` between `cadence` and
+  `hint` — markers use a colon, so this should be `# cadence:hint`. As
+  written it's a plain comment and the marker has no effect."* The
+  previous regex only matched `prefix:keyword` separators; now it
+  also matches `_` and `-` and flags wrong-separator cases distinctly
+  from wrong-prefix and wrong-keyword cases.
+
+## 0.2.25 — 2026-05-26
+
+### Changed
+- **Docs sync.** README, web Guide, `%cadence_help` cheatsheet, demo
+  notebook, and the `show_hint` docstring all updated to:
+  - Show the new no-colon `# cadence:hint <text>` form (with a note
+    that the older `# cadence:hint: <text>` still works).
+  - State the **default `hint-after-attempts` is now 2** (was 1).
+  - Reflect the new ipywidgets buttons in the hints/solutions
+    feature card on the web Guide (buttons, not text prompts).
+- Demo notebooks (`demo-teacher-setup.ipynb` in repo root + in
+  `frontend/public/demos/`) rewritten to use the no-colon hint syntax.
+
+## 0.2.24 — 2026-05-26
+
+Same as 0.2.23 — bumped because 0.2.23's wheel had already been
+uploaded to TestPyPI during the previous iteration. No code differences
+between 0.2.23 and 0.2.24.
+
+## 0.2.23 — 2026-05-26
+
+### Added
+- **`%cadence_autoregister` now warns on typo'd / unknown markers.**
+  Two checks: (1) a line like `#candece:given` (wrong prefix,
+  recognised keyword) gets a *"looks like a typo'd `# cadence:` marker
+  — did you mean `# cadence:given`?"* warning, and (2) `# cadence:rebeal-after`
+  (right prefix, unknown keyword) gets a *"unknown marker — not one of
+  …"* warning. Both are non-fatal but surfaced in the success card so
+  the teacher doesn't silently lose a region they thought they'd
+  delimited.
+
+### Changed
+- **Worked solution renders with Python syntax highlighting** via
+  `IPython.display.Markdown` + a ```python``` fence. Jupyter's
+  built-in markdown renderer applies the same keyword/string/comment
+  colouring students see in their own cells — much nicer than a plain
+  dark `<pre>` (and the `!important` fight with `.rendered_html pre`
+  is sidestepped entirely).
+- **Copy button now displays Javascript directly to the cell output**
+  (no captured `widgets.Output` wrapper), which actually routes the
+  JS to the browser instead of swallowing it. Visible confirmation
+  via the button label flipping to `✓ Copied` for 1.6 s.
+- **Hint vs solution buttons are now visually distinct** so they
+  can't be mistaken for each other when both appear together at
+  attempt N ≥ reveal-after: hint stays amber/warning and labeled
+  "💡 Show hint"; solution is now primary-blue and labeled "🔑 Show
+  worked solution". Margins bumped from 4 → 6 px for clearer spacing.
+
+## 0.2.22 — 2026-05-26
+
+### Fixed
+- **`📋 Copy code` / `📋 Copy hint` buttons now actually copy.** The
+  0.2.20 implementation tried `navigator.clipboard.writeText` first,
+  but the round-trip through `widget.on_click → Javascript display →
+  browser execute` often outlived the user-gesture window the modern
+  Clipboard API requires, so the call rejected silently. The new
+  payload tries the synchronous `document.execCommand('copy')` path
+  first (works without an active gesture via a transient textarea +
+  select() + copy), and falls back to the modern API only if
+  execCommand is unavailable. Works in JupyterLab, classic Notebook,
+  and Colab.
+- **Worked-solution `<pre>` block was rendering with JupyterLab's
+  stock light-grey `.rendered_html pre` styling** instead of the
+  intended dark code-block look. Marked the background, color,
+  padding, border, font-family, and overflow rules `!important` so
+  inline styles win.
+
+### Changed
+- **Default `hint-after-attempts` bumped from 1 to 2.** The hint
+  button previously appeared on the very first wrong attempt — too
+  eager, gave students no room to re-read or try again before being
+  nudged. 2 means "after the second wrong attempt", which matches
+  the common-sense TA pattern of letting a learner try twice before
+  intervening. Override per cell with `# cadence:hint-after N` (or
+  globally with `--hint-after-attempts N` on `%cadence_register`)
+  exactly as before.
+
+## 0.2.21 — 2026-05-26
+
+### Fixed
+- **Standalone `# cadence:given` / `:end` cells now flow to the
+  student notebook.** Previously the marker only worked when paired
+  with a `# cadence:checkpoint` in the same cell; a standalone setup
+  cell with just the given block fell through every scaffold branch
+  and got dropped. The given region now carries through as a regular
+  code cell in the student notebook (marker lines stripped, anything
+  outside the markers stays teacher-only).
+
+### Changed
+- **Hint marker syntax: the trailing colon is now optional.** Every
+  other marker is `# cadence:NAME [args]` (no second colon); the hint
+  was the odd one out. `# cadence:hint <text>` is the preferred form;
+  `# cadence:hint: <text>` still works for back-compat. No conflict
+  with `# cadence:hint-after N` — the regex requires whitespace after
+  the optional colon, and `-after` isn't whitespace.
+
+## 0.2.20 — 2026-05-26
+
+### Changed
+- **Worked solution is back to a `<pre>` block with proper code
+  styling**, paired with an ipywidgets `📋 Copy code` button that
+  copies via `IPython.display.Javascript`. The 0.2.16–0.2.18 textarea
+  approach didn't work in JupyterLab — Lab's global Cmd+A binding
+  captured the keystroke before the textarea could, and Lab's
+  stylesheet beat the `!important` styling. The new approach
+  separates display (PRE block) from copy (widget button emitting a
+  JS payload through the widget protocol, which front-ends do NOT
+  sanitize the way they sanitize raw display HTML). The hint box gets
+  the same `📋 Copy hint` button.
+
+### Added
+- **`%cadence_autoregister` advisories.** A new `warnings` field on
+  `AutoregisterResult` and a corresponding card in the success render.
+  Currently surfaces one check: "checkpoint X has a hint, but
+  `hint_after >= reveal_after` — the hint will never appear before
+  the solution." Misconfiguration was easy to miss with the per-cell
+  `# cadence:hint-after N` and `# cadence:reveal-after N` markers;
+  now it shows up at autoregister time.
+
+## 0.2.19 — 2026-05-26
+
+### Added
+- **`%cadence_help` cheatsheet now covers the full surface.** Two
+  big gaps closed:
+  - New **Teacher: workflow (recommended)** section listing
+    `%cadence_autoregister` and `%cadence_scaffold` — these were the
+    headline magics but somehow weren't in the in-kernel reference.
+  - New **Markers** section with all 10 `# cadence:*` markers
+    (`checkpoint`, `task`, `hint:`, `hint-after`, `reveal-after`,
+    `no-solution`, `starter`/`end`, `given`/`end`, `solution`,
+    `hide`/`end`) — declarative authoring surface alongside the
+    magics.
+- Renamed the old `Teacher: checkpoints` section to "Teacher:
+  checkpoints (direct — alternative to autoregister)" so it's clear
+  these are the manual fallback path, not the primary one.
+
+## 0.2.18 — 2026-05-26
+
+### Fixed
+- **Worked-solution textarea now actually renders like a dark code
+  block.** Jupyter's stock `.rendered_html textarea` CSS was winning
+  specificity over my inline styles in 0.2.16/0.2.17, so the box
+  rendered as a plain bordered text-field instead of the intended
+  dark monospace block. Marked every styling rule `!important` so the
+  textarea now displays as a code block in every Jupyter front-end
+  regardless of theme.
+- **Single click selects all the code.** Added `onfocus="this.select()"`
+  so clicking inside the textarea selects the entire solution
+  immediately — one Cmd/Ctrl+C and it's on the clipboard. (Where the
+  sanitizer strips `onfocus`, the textarea still works for the usual
+  click → Cmd/Ctrl+A → Cmd/Ctrl+C pattern.)
+
+## 0.2.17 — 2026-05-26
+
+### Changed
+- **"💡 Show hint" / "💡 Show solution" are now real `ipywidgets.Button`s,
+  not text instructions.** A failed `check()` previously rendered an
+  HTML prompt like *"Run `show_hint("ex.mean")`"* — students had to copy
+  the command into a new cell. Now the same trigger renders an actual
+  button that, when clicked, calls `show_hint` / `show_solution` and
+  renders the result directly underneath. Uses the widget protocol (so
+  the click is handled kernel-side), which sidesteps the inline-`onclick`
+  sanitization that broke the earlier HTML button attempts.
+- Falls back to the original text-instruction prompt when ipywidgets
+  isn't importable (extremely rare on Jupyter / Colab / Kaggle / VSCode,
+  but the fallback keeps the workflow usable in headless environments).
+
+## 0.2.16 — 2026-05-26
+
+### Changed
+- **Worked solution now renders in a readonly `<textarea>` instead of a
+  `<pre>` + copy button.** Reason: Jupyter's HTML sanitizer (in
+  JupyterLab, untrusted classic Notebook, Colab) strips inline
+  `onclick` attributes and sometimes the `<button>` element itself, so
+  the 0.2.14/0.2.15 copy button never reliably rendered. A readonly
+  textarea styled to look like a dark code block is sanitizer-proof,
+  visually equivalent, and supports the universal "click inside,
+  Cmd/Ctrl+A, Cmd/Ctrl+C" copy pattern in every Jupyter front-end.
+  A small caption above the block tells students what to do.
+- Hint box: dropped the copy button (same reason); the rendered hint
+  markdown stays selectable directly. Checkpoint id chip styling
+  upgraded to match the solution box for visual consistency.
+
+## 0.2.15 — 2026-05-26
+
+### Fixed
+- **Copy buttons on `show_hint()` / `show_solution()` now work inside
+  Colab's sandboxed output iframe.** The 0.2.14 button used only the
+  modern `navigator.clipboard.writeText` API, which Colab's iframe
+  Permissions Policy sometimes blocks (or returns a rejected promise
+  with no visible feedback). The button now tries the modern API
+  first and falls back to a transient `<textarea>` +
+  `document.execCommand('copy')` on any failure — works inside
+  Colab, JupyterLab, and Notebook classic regardless of how the
+  iframe is sandboxed.
+
+## 0.2.14 — 2026-05-26
+
+### Added
+- **Copy buttons on `show_hint()` and `show_solution()` output.** A
+  small "Copy hint" / "Copy answer" / "Copy code" button next to each
+  payload that puts the raw text on the clipboard with one click.
+  Previously copying the worked solution meant manually selecting the
+  text inside a `<pre>` block — fiddly enough that students were
+  retyping. Now it's one click.
+
+### Fixed
+- **"Expected answer:" line in the solution box now reads as dark
+  body text** instead of inheriting Jupyter's default `<code>` styling
+  (which paints code rose-pink on a faint-pink background — close to
+  unreadable against our solution-card's light-purple background).
+  Inline-styled the `<code>` blocks in `show_solution()` /
+  `show_hint()` with explicit `color: #1f2937` and a higher-contrast
+  light-purple chip background so the answer and the checkpoint id
+  both stand out.
+
+## 0.2.13 — 2026-05-26
+
+### Fixed
+- **`show_solution()` no longer renders raw `b64:...` strings.** If a
+  teacher ever Run-Alled the registered notebook with an older
+  `cadence-edu` in the kernel (anything before 0.2.9 didn't have the
+  base64-decode step in `%cadence_register`), the server ended up
+  storing the literal `b64:...` payload as the solution code, and
+  every student `show_solution()` call rendered the encoded string
+  in the dark code block. `show_solution()` now does a second-pass
+  decode at display time, so students see the readable code even
+  without the teacher re-registering. (Re-running the registered
+  notebook with 0.2.13 in the kernel cleans up the backend storage
+  too.)
+- **Grey body text in the `💡 Solution for <id>` box** — the outer
+  wrapper div had no explicit `color:` declaration, so child text
+  inherited Jupyter's default grey. Now sets `color: #1f2937` on the
+  wrapper.
+
 ## 0.2.12 — 2026-05-26
 
 ### Fixed

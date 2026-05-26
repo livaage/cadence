@@ -100,7 +100,7 @@ because every other detail follows from it.
 
 | | Form | Purpose | Examples |
 |---|---|---|---|
-| **Markers** | Comments — `# cadence:foo` in code cells, `<!-- cadence:foo -->` in markdown cells | *Static metadata.* They label what a cell IS. They never do anything when you run the cell — they sit there waiting for tools to read them. | `# cadence:checkpoint setup.arange`<br>`# cadence:solution`<br>`# cadence:hint: try ...`<br>`<!-- cadence:task setup.arange -->` |
+| **Markers** | Comments — `# cadence:foo` in code cells, `<!-- cadence:foo -->` in markdown cells | *Static metadata.* They label what a cell IS. They never do anything when you run the cell — they sit there waiting for tools to read them. | `# cadence:checkpoint setup.arange`<br>`# cadence:solution`<br>`# cadence:hint try ...`<br>`<!-- cadence:task setup.arange -->` |
 | **Magics** | Jupyter line/cell magics — `%cadence_foo` / `%%cadence_foo` | *Actions.* They DO something now: talk to the server, read your notebook, write a file. | `%cadence_create_lesson "..."`<br>`%cadence_autoregister`<br>`%cadence_scaffold`<br>`%%cadence_register_yaml` |
 
 So when you see `# cadence:checkpoint mean.basic`, it doesn't talk to any
@@ -241,12 +241,12 @@ magics (`%cadence_*`) are what *do* something. The set you can reach for:
 |---|---|---|
 | `# cadence:checkpoint <id> [<comparator>]` | Top of a code cell | Marks this cell as exercise `<id>`. Optional second word overrides the inferred comparator (e.g. `manual`, `exact`). |
 | `<!-- cadence:task [<id>] -->` | Markdown cell | Marks the markdown as task prose. If an id is given, the next code cell becomes the exercise stub for that id (and `# cadence:checkpoint` isn't needed). |
-| `# cadence:hint: <text>` | Inside an exercise cell | Becomes the hint for that checkpoint. Markdown allowed — backticks, code fences, `**bold**`. |
+| `# cadence:hint <text>` | Inside an exercise cell | Becomes the hint for that checkpoint. Markdown allowed — backticks, code fences, `**bold**`. (The older `# cadence:hint: <text>` form with a trailing colon also still works, for back-compat with existing notebooks.) |
 | `# cadence:starter` … `# cadence:end` | Inside an exercise code cell | The region between becomes the student stub body (instead of `# Your code here`). The kernel comments this region out at execution time, so it can contain prose / pseudocode / unfilled placeholders that wouldn't otherwise parse as Python. Anything outside the markers is treated as the teacher's reference and stripped from the student notebook. |
 | `# cadence:given` … `# cadence:end` | Inside an exercise code cell | Setup code (loaded data, seeded RNG draws, problem inputs) that the student also needs to see. **Runs in the teacher kernel** (no comment-out) and **is copied verbatim into the student notebook** above the starter stub. Use when the teacher's reference solution needs variables that students should start with too. |
 | `# cadence:no-solution` | Inside an exercise code cell | Suppress the auto-revealed worked solution for this one checkpoint, even when reveals are globally on. For exercises where the answer is short enough that revealing it gives the whole question away. |
 | `# cadence:reveal-after N` | Inside an exercise code cell | Per-checkpoint override of the global `--reveal-after-attempts` value. Use for a harder exercise you want students to wrestle with longer. |
-| `# cadence:hint-after N` | Inside an exercise code cell | Same idea, for the hint-unlock threshold (default 1). |
+| `# cadence:hint-after N` | Inside an exercise code cell | Same idea, for the hint-unlock threshold (default **2** — students get one try on their own before the hint button appears). |
 | `# cadence:solution` | Top of a code cell | Copy this whole code cell verbatim into the student notebook. Use for shared setup, an explainer snippet, or a worked solution you want students to see. **Mutually exclusive with `# cadence:checkpoint`** — `solution` means "show this to students," `checkpoint` means "stub it out." Don't mix them in the same cell. |
 | `# cadence:hide` … `# cadence:end` | Inside a code cell | The region between is stripped from **both** the registered teacher notebook and the student notebook — purely teacher-side authoring notes. |
 | `<!-- cadence:hide -->` … `<!-- cadence:end -->` | Inside a markdown cell | Same — strips a private aside from inside an otherwise-public markdown cell (e.g. "this trips up students because…" inside an exercise description). |
